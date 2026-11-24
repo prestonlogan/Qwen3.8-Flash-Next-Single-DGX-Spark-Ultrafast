@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Re-render the README images from their HTML sources with headless Chrome (macOS path; set CHROME elsewhere).
+# Re-render the README charts from their HTML sources with headless Chrome (macOS path; set CHROME elsewhere).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 shot() { "$CHROME" --headless=new --disable-gpu --user-data-dir="$TMP/profile" --hide-scrollbars \
   --allow-file-access-from-files --virtual-time-budget=3000 "$@" >/dev/null 2>&1; }
-shot --window-size=2000,1125 --force-device-scale-factor=1.6 --screenshot="$PWD/media/header.png" "file://$PWD/bench/header.html"
+# media/header.jpg is the announcement image, not rendered here (bench/header.html is the old header, kept for reference).
 for chart in speed quality; do for theme in light dark; do
   sed -e "s/<html lang=\"en\">/<html lang=\"en\" data-theme=\"$theme\">/" -e 's#</head>#<style>details{display:none}</style></head>#' \
     "bench/$chart-chart.html" > "bench/_render.html"

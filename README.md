@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Qwen3.8-Flash-Next on one NVIDIA DGX Spark, v1.1.0: 132 tok/s on prose, 2.8× the typical Flash-Next setup on the same box. 154 tok/s on code, 296 tok/s total across 4 requests, 109 tok/s mean over 30 sampled agent sessions. Bar chart of decode speed against the typical recipe (TensorFold, NVFP4 + MTP): prose 132.4 vs 46.6, code 153.6 vs 58.3, 4 requests 296.3 vs 97.3." src="media/header.png">
+  <img alt="Qwen3.8 Flash Next on one NVIDIA DGX Spark, v1.1.0: 132 tok/s on prose, 2.8× faster than the baseline recipe (typical NVFP4 + MTP recipe 46.6 tok/s, this recipe 132.4 tok/s). 109 tok/s on agent-session replays (30-run replay, temperature 1.0), 154 tok/s on code, 296 tok/s total across 4 concurrent requests." src="media/header.jpg">
 </p>
 
 <p align="center">
