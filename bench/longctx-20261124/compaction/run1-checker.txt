@@ -1,0 +1,26 @@
+PASS [note 1] clean 1.1
+PASS [note 1] clean 1.1 CRLF
+PASS [note 1] missing file
+PASS [note 1] finding format and exit 1
+PASS [note 2] request line two parts
+PASS [note 2] request line double space skips H002/H003
+PASS [note 3] version HTTP/2
+PASS [note 3] version lowercase
+PASS [note 4] method lowercase
+PASS [note 4] method with digit
+PASS [note 5] 1.0 without Host is fine
+PASS [note 6] lowercase host counts
+PASS [note 6] duplicate Host, mixed case
+PASS [note 7] space before colon
+PASS [note 7] space before colon still counts as Host
+PASS [note 8] CL and TE
+PASS [note 9] CL invalid
+PASS [note 9] CL with spaces is valid
+PASS [note 9] CL negative
+FAIL [note 10] obs-fold  want [(4, 'H009')] exit 1, got [(4, 'H010')] exit 1
+PASS [note 10] obs-fold not checked further
+PASS [note 11] body not checked
+PASS [note 11] sorted by line then code
+PASS [note 12] json clean
+PASS [note 12] json findings
+{"passed": 24, "total": 25, "notes_fully_passed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12], "notes_failed": [10]}
