@@ -1,4 +1,4 @@
-# Hibana at a pinned commit plus this recipe's patches (patches/), with its locked GB10 environment (uv.lock: torch 2.13 cu130, FlashInfer 0.6.17, Triton).
+# Hibana at a pinned commit plus this recipe's patches (patches/0001-0004), with its locked GB10 environment (uv.lock: torch 2.13 cu130, FlashInfer 0.6.17, Triton).
 # Hibana runs on the host with uv by default; this puts the same `uv sync` in an image. The CUDA 13 devel base gives
 # the /usr/local/cuda/bin/nvcc that Hibana's preflight wants and its first-use kernel builds need.
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
@@ -34,7 +34,14 @@ RUN git apply /opt/patches/0001-tool-args-anyof.patch \
 RUN git apply /opt/patches/0002-flashnext-vision.patch \
     && git apply /opt/patches/0003-vision-speculation-graphs.patch \
     && grep -q 'class QwenVision' hibana/model/flashnext/vision.py \
-    && grep -q 'HIBANA_VISION_GRAPHS' hibana/engine/config.py \
+    && grep -q 'HIBANA_VISION_GRAPHS' hibana/engine/config.py
+# 0004 (v1.1.0): repetition guard and late </think> ramp, distilled MTP draft head with 3-bit experts, GB10 kernels
+#       (HyperConnection mix, split-K sparse attention, 3-bit GEMM geometry), route renormalization, prefill warmup.
+#       The opt-in parts are switched on by compose.yaml; see the patch header.
+RUN git apply /opt/patches/0004-v1.1-exact-speed-stack.patch \
+    && grep -q '_tail_periodic' hibana/engine/think_guard.py \
+    && grep -q 'HIBANA_MTP_W3_EXPERTS_PATH' hibana/model/flashnext/mtp.py \
+    && grep -q '_sparse_gqa_splitk_kernel' hibana/kernels/qsa/attention.py \
     && .venv/bin/python -m compileall -q hibana
 
 ENV PATH=/opt/hibana/.venv/bin:/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda TRITON_CACHE_DIR=/root/.cache/triton

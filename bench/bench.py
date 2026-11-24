@@ -2,10 +2,12 @@
 # server. Greedy cells send Hibana's stock acceptance rule explicitly (accept_top_k 3, accept_margin 2.0); sampled
 # cells send no temperature (1.0, the generation config). Thinking on (server default).
 # Decode tok/s = (completion_tokens - 1) / (last chunk - first chunk). Results: bench/results.json.
+# BENCH_ACCEPT=server leaves the acceptance rule to the server (v1.1.0's exact acceptance) instead of sending the stock one.
 import json, os, time, base64, sys, statistics, threading, urllib.request
 URL = os.environ.get("HIBANA_URL", "http://127.0.0.1:8888") + "/v1/chat/completions"
 KEY = os.environ.get("API_KEY", "")
 MODEL = os.environ.get("HIBANA_MODEL", "local-ai")
+STOCK_ACCEPT = os.environ.get("BENCH_ACCEPT", "stock") != "server"
 IMG = os.path.dirname(os.path.abspath(__file__)) + "/"
 PROSE = "Write a 700-word short story about a lighthouse keeper who finds a message in a bottle. Use vivid detail."
 CODE = "Write a Python LRU cache class with get and put, full type hints, docstrings, and pytest unit tests."
@@ -16,7 +18,7 @@ def img_msg(name, text):
 def one(messages, greedy, max_tokens):
     body = {"model": MODEL, "messages": messages, "max_tokens": max_tokens, "stream": True,
             "stream_options": {"include_usage": True}}
-    if greedy: body.update(temperature=0, accept_top_k=3, accept_margin=2.0)
+    if greedy: body.update(temperature=0, **(dict(accept_top_k=3, accept_margin=2.0) if STOCK_ACCEPT else {}))
     req = urllib.request.Request(URL, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json", **({"Authorization": "Bearer " + KEY} if KEY else {})})
     t0 = time.time(); first = last = None; n = None

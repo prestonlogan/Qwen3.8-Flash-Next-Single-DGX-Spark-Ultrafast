@@ -1,0 +1,91 @@
+<!doctype html>
+<!-- README header graphic. Render: 2000x1125 CSS px at device scale 1.6 -> media/header.png (3200x1800).
+     Data: bench/ab-20261124 (v1.1.0 default, temperature 0) and dedene's typical-recipe numbers. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #17181b; --text: #f2f1ec; --muted: #8b8c91; --grid: #2a2b30; --typical: #55565c; --blue: #3987e5; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2000px; height: 1125px; background: var(--bg); color: var(--text);
+    font-family: "Inter", "SF Pro Display", -apple-system, sans-serif; overflow: hidden; }
+  .mono { font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace; }
+  .top { position: absolute; left: 105px; top: 88px; right: 105px; display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; gap: 22px; font-size: 37px; letter-spacing: -0.3px; }
+  .brand img { width: 58px; height: 58px; }
+  .brand b { font-weight: 600; } .brand span { font-weight: 400; color: #d8d7d2; }
+  .tags { font-size: 23px; color: var(--muted); letter-spacing: 1.5px; }
+  .hero { position: absolute; left: 100px; top: 290px; display: flex; align-items: baseline; }
+  .hero .n { font-size: 270px; font-weight: 700; letter-spacing: -10px; line-height: 1; }
+  .hero .u { font-size: 58px; color: #c9c8c3; font-weight: 500; margin-left: 40px; }
+  .claim { position: absolute; left: 105px; top: 565px; font-size: 38px; line-height: 52px; font-weight: 500; letter-spacing: -0.5px; }
+  .claim em { font-style: normal; color: var(--blue); font-weight: 600; }
+  .stats { position: absolute; left: 105px; top: 740px; display: flex; }
+  .stat { padding-right: 46px; margin-right: 46px; border-right: 1px solid #34353a; }
+  .stat:last-child { border-right: 0; }
+  .stat .v { font-size: 58px; font-weight: 700; letter-spacing: -1px; }
+  .stat .v small { font-size: 23px; font-weight: 400; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
+  .stat .l { font-size: 21px; color: #c9c8c3; margin-top: 14px; }
+  .chart { position: absolute; left: 945px; top: 240px; width: 950px; }
+  .chart h2 { font-size: 27px; font-weight: 600; } .chart h2 span { color: var(--muted); font-weight: 400; }
+  .legend { display: flex; gap: 38px; margin-top: 22px; font-size: 21px; color: #c9c8c3; }
+  .legend i { display: inline-block; width: 16px; height: 16px; border-radius: 3px; margin-right: 12px; vertical-align: -1px; }
+  svg { position: absolute; left: 945px; top: 330px; }
+  .foot { position: absolute; left: 105px; right: 105px; top: 992px; border-top: 1px solid #2f3035; padding-top: 30px;
+    display: flex; justify-content: space-between; font-size: 18px; color: var(--muted); }
+  .foot .mono { font-size: 19px; color: #c9c8c3; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="brand"><img src="../media/qwen-mark.png" alt=""><div><b>Qwen3.8-Flash-Next</b> <span>on x1 NVIDIA DGX Spark</span></div></div>
+    <div class="tags mono">v1.1.0 · Hibana fast · image input · docker compose up</div>
+  </div>
+
+  <div class="hero"><div class="n">132</div><div class="u">tok/s</div></div>
+  <div class="claim">on prose. <em>2.8×</em> the typical<br>Flash-Next setup on the same box.</div>
+
+  <div class="stats">
+    <div class="stat"><div class="v">154<small>tok/s</small></div><div class="l">code</div></div>
+    <div class="stat"><div class="v">296<small>tok/s</small></div><div class="l">4 requests, total</div></div>
+    <div class="stat"><div class="v">109<small>tok/s</small></div><div class="l">agent sessions, sampled</div></div>
+  </div>
+
+  <div class="chart">
+    <h2>Decode speed <span>tok/s, higher is better</span></h2>
+    <div class="legend"><span><i style="background:var(--typical)"></i>Typical recipe (TensorFold, NVFP4 + MTP)</span><span><i style="background:var(--blue)"></i>This recipe (v1.1.0)</span></div>
+  </div>
+  <svg id="svg" width="950" height="590" viewBox="0 0 950 590"></svg>
+
+  <div class="foot"><div>Temp 0, thinking on, 512 output tokens, median of 3 · typical recipe: dedene · agent sessions: 30-run replay, temperature 1.0</div>
+    <div class="mono">github.com/prestonlogan/Qwen3.8-Flash-Next-Single-DGX-Spark-Ultrafast</div></div>
+
+<script>
+const G = [
+  { name: 'Prose', v: [46.6, 132.4] },
+  { name: 'Code', v: [58.3, 153.6] },
+  { name: '4 requests, total', v: [97.3, 296.3] },
+];
+const NS = 'http://www.w3.org/2000/svg', svg = document.getElementById('svg');
+const el = (t, a, txt) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; };
+const L = 65, R = 950, BASE = 490, TOP = 70, MAX = 320, y = v => BASE - (v / MAX) * (BASE - TOP);
+const font = 'Inter, "SF Pro Display", sans-serif';
+for (const t of [0, 100, 200, 300]) {
+  if (t) el('line', { x1: L, x2: R, y1: y(t), y2: y(t), stroke: '#2a2b30', 'stroke-width': 1 });
+  el('text', { x: 46, y: y(t) + 7, 'text-anchor': 'end', fill: '#8b8c91', 'font-size': 21, 'font-family': font }, t);
+}
+el('line', { x1: L, x2: R, y1: BASE, y2: BASE, stroke: '#3a3b40', 'stroke-width': 2 });
+const band = (R - L) / G.length, BW = 80, GAP = 13;
+G.forEach((g, i) => {
+  const cx = L + band * i + band / 2;
+  g.v.forEach((v, j) => {
+    const x = cx - BW - GAP / 2 + j * (BW + GAP), top = y(v), r = 6;
+    el('path', { d: `M${x},${BASE} V${top + r} Q${x},${top} ${x + r},${top} H${x + BW - r} Q${x + BW},${top} ${x + BW},${top + r} V${BASE} Z`, fill: j ? '#3987e5' : '#55565c' });
+    el('text', { x: x + BW / 2, y: top - 16, 'text-anchor': 'middle', fill: j ? '#f2f1ec' : '#c9c8c3', 'font-size': j ? 27 : 24, 'font-weight': j ? 700 : 400, 'font-family': font }, v.toFixed(1));
+  });
+  el('text', { x: cx, y: BASE + 46, 'text-anchor': 'middle', fill: '#f2f1ec', 'font-size': 24, 'font-weight': 600, 'font-family': font }, g.name);
+  el('text', { x: cx, y: BASE + 80, 'text-anchor': 'middle', fill: '#c9c8c3', 'font-size': 21, 'font-family': font }, `${(g.v[1] / g.v[0]).toFixed(1)}× faster`);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+{
+  "label": "AB_t94",
+  "cold_0pct_solo": {
+    "prompt_tokens": 17907,
+    "cached_tokens": 0,
+    "uncached_tokens": 17907,
+    "completion_tokens": 32,
+    "ttft_ms": 7921.5,
+    "total_s": 8.782,
+    "eff_prefill_tps": 2260.6
+  },
+  "warm_0pct_solo": {
+    "prompt_tokens": 17906,
+    "cached_tokens": 0,
+    "uncached_tokens": 17906,
+    "completion_tokens": 32,
+    "ttft_ms": 11984.7,
+    "total_s": 12.367,
+    "eff_prefill_tps": 1494.1
+  },
+  "ram_100pct_cached": {
+    "prompt_tokens": 17906,
+    "cached_tokens": 17856,
+    "uncached_tokens": 50,
+    "completion_tokens": 32,
+    "ttft_ms": 177.3,
+    "total_s": 0.558,
+    "eff_prefill_tps": 282.0
+  },
+  "concurrent_0pct_with_title": {
+    "main": {
+      "prompt_tokens": 17906,
+      "cached_tokens": 64,
+      "uncached_tokens": 17842,
+      "completion_tokens": 32,
+      "ttft_ms": 6144.3,
+      "total_s": 6.514,
+      "eff_prefill_tps": 2903.8
+    },
+    "title": {
+      "prompt_tokens": 49,
+      "cached_tokens": 0,
+      "uncached_tokens": 49,
+      "completion_tokens": 4,
+      "ttft_ms": 3948.1,
+      "total_s": 6.186,
+      "eff_prefill_tps": 12.4
+    }
+  },
+  "fixed_ssd_salt_probe": {
+    "prompt_tokens": 17909,
+    "cached_tokens": 64,
+    "uncached_tokens": 17845,
+    "completion_tokens": 32,
+    "ttft_ms": 5761.7,
+    "total_s": 6.217,
+    "eff_prefill_tps": 3097.2
+  }
+}

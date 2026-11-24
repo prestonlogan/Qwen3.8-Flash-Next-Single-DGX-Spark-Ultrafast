@@ -97,22 +97,22 @@
 </head>
 <body>
 <div class="viz-root">
-  <h1>This recipe streams 2.2× faster than a typical Flash-Next setup</h1>
+  <h1>This recipe streams 2.8× faster than a typical Flash-Next setup</h1>
   <p class="sub">Output tokens per second, Qwen3.8-Flash-Next on one DGX Spark. Higher is better.</p>
 
   <ul class="legend" aria-label="Legend">
     <li><span class="sw" style="background:var(--typical)"></span>Typical recipe (TensorFold, NVFP4 + MTP)</li>
     <li><span class="sw" style="background:var(--exact)"></span>Hibana <code>exact</code></li>
-    <li><span class="sw" style="background:var(--fast)"></span><b>This recipe</b> (Hibana <code>fast</code> + images)</li>
+    <li><span class="sw" style="background:var(--fast)"></span><b>This recipe</b> (v1.1.0, Hibana <code>fast</code> + images)</li>
     <li><span class="sw" style="background:var(--sampled)"></span>This recipe, sampled (temperature 1.0)</li>
   </ul>
 
   <div class="chart" id="chart">
-    <svg id="svg" viewBox="0 0 1100 470" role="img" aria-label="Grouped bar chart of tokens per second. English prose: typical 46.6, Hibana exact 45.2, this recipe 101.3, sampled 82.2. Code: 58.3, 50.7, 133.3, 114.3. Prose about an image: typical and exact have no image input, this recipe 101.8, sampled 84.5. Four requests at once, total: 97.3, 96.6, 252.9, 204.2."></svg>
+    <svg id="svg" viewBox="0 0 1100 470" role="img" aria-label="Grouped bar chart of tokens per second. English prose: typical 46.6, Hibana exact 45.2, this recipe 132.4, sampled 110.7. Code: 58.3, 50.7, 153.6, 122.7. Prose about an image: typical and exact have no image input, this recipe 114.0, sampled 90.1. Four requests at once, total: 97.3, 96.6, 296.3, 205.0."></svg>
     <div class="tip" id="tip"></div>
   </div>
 
-  <p class="foot">One request at a time unless noted; the last group is total throughput with 4 requests at once. Greedy decoding except the sampled bars. Multipliers compare this recipe with the typical recipe. Data: <code>bench/results.json</code>.</p>
+  <p class="foot">One request at a time unless noted; the last group is total throughput with 4 requests at once. Temperature 0 except the sampled bars; this recipe uses its default acceptance (<code>TUNING=v1.1</code>). Multipliers compare this recipe with the typical recipe. Data: <code>bench/ab-20261124</code> (this recipe, 2026-11-24) and dedene (typical recipe, Hibana <code>exact</code>).</p>
 
   <details>
     <summary>Table view</summary>
@@ -123,18 +123,18 @@
 const SERIES = [
   { key: 'typical', name: 'Typical recipe (TensorFold, NVFP4 + MTP)' },
   { key: 'exact',   name: 'Hibana exact' },
-  { key: 'fast',    name: 'This recipe (Hibana fast + images)', hero: true },
+  { key: 'fast',    name: 'This recipe (v1.1.0, Hibana fast + images)', hero: true },
   { key: 'sampled', name: 'This recipe, sampled (temperature 1.0)' },
 ];
 const GROUPS = [
-  { name: 'English prose',          v: [46.6, 45.2, 101.3, 82.2] },
-  { name: 'Code',                   v: [58.3, 50.7, 133.3, 114.3] },
-  { name: 'Prose about an image',   v: [null, null, 101.8, 84.5] },
-  { name: '4 requests at once, total', v: [97.3, 96.6, 252.9, 204.2] },
+  { name: 'English prose',          v: [46.6, 45.2, 132.4, 110.7] },
+  { name: 'Code',                   v: [58.3, 50.7, 153.6, 122.7] },
+  { name: 'Prose about an image',   v: [null, null, 114.0, 90.1] },
+  { name: '4 requests at once, total', v: [97.3, 96.6, 296.3, 205.0] },
 ];
 const W = 1100, H = 470, M = { t: 34, r: 8, b: 74, l: 46 };
 const PW = W - M.l - M.r, PH = H - M.t - M.b;
-const YMAX = 275, TICKS = [0, 50, 100, 150, 200, 250];
+const YMAX = 325, TICKS = [0, 50, 100, 150, 200, 250, 300];
 const BAR = 24, GAP = 14;
 const y = v => M.t + PH - (v / YMAX) * PH;
 const NS = 'http://www.w3.org/2000/svg';

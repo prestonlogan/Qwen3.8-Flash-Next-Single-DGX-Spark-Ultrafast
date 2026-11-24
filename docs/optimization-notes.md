@@ -5,6 +5,12 @@ These notes cover five days of work (2026-11-16 to 2026-11-20) on one DGX Spark,
 [dedene's recipe](https://github.com/dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark). They record every change we measured,
 including the ones we threw away, so you don't have to repeat them.
 
+> **v1.1.0 (2026-11-24).** These notes describe v1.0.0. v1.1.0 adds a distilled draft head, a repetition guard and
+> GB10 kernels (patch 0004). With that stack, the top-3 greedy rule from section 5 is now the default at temperature
+> 0, and sampled acceptance returns at `accept_soft` 0.35, below the 0.5 that section 6 reverted. The guard stops the
+> loops section 6 describes: the default had 0 looping runs of 30 in the agent replay. `TUNING=v1.1-exact` keeps
+> exact acceptance. Results: [bench/ab-20261124](../bench/ab-20261124/README.md).
+
 Back to the [README](../README.md).
 
 ## Contents
