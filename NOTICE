@@ -11,8 +11,9 @@ This recipe builds on two projects:
    Chi-Chih Chang and the Abdelfattah Lab at Cornell. Hibana is downloaded and built inside the image; it is not
    copied into this repository.
 
-   patches/0002-flashnext-vision.patch and patches/0003-vision-speculation-graphs.patch modify Hibana source files.
-   As required by section 4(b) of the Apache License 2.0: these patches change files under hibana/ (api/, engine/,
+   patches/0002-flashnext-vision.patch, patches/0003-vision-speculation-graphs.patch and
+   patches/0004-v1.1-exact-speed-stack.patch modify Hibana source files.
+   As required by section 4(b) of the Apache License 2.0: these patches change files under hibana/ (api/, engine/, kernels/,
    model/ and proposers/; each patch lists the files it touches). The modified files stay under the Apache
    License 2.0. The patches are offered under the same license.
 
