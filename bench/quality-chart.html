@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Quality: Hibana fast against exact and a typical recipe</title>
+<title>Quality: v1.1.0 against v1.0.0, and stock Hibana fast against reference setups</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='3' y='3' width='4' height='11' rx='1' fill='%232a78d6'/><rect x='9' y='4' width='4' height='10' rx='1' fill='%238f8e88'/></svg>">
 <style>
   .viz-root {
@@ -18,13 +18,15 @@
     --typical: #c3c2bb;
     --exact: #8f8e88;
     --fast: #2a78d6;
+    --exact11: #93bdee;
+    --v10: #c3c2bb;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) .viz-root {
       color-scheme: dark;
       --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
       --grid: #2e2e2c; --axis: #4a4945; --dot-off: #33332f;
-      --typical: #4f4e4a; --exact: #7a7973; --fast: #3987e5;
+      --typical: #4f4e4a; --exact: #7a7973; --fast: #3987e5; --exact11: #2c5a8f; --v10: #5c5b57;
     }
     :root:where(:not([data-theme="light"])) body { background: #1a1a19; }
   }
@@ -32,7 +34,7 @@
     color-scheme: dark;
     --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #9a998f;
     --grid: #2e2e2c; --axis: #4a4945; --dot-off: #33332f;
-    --typical: #4f4e4a; --exact: #7a7973; --fast: #3987e5;
+    --typical: #4f4e4a; --exact: #7a7973; --fast: #3987e5; --exact11: #2c5a8f; --v10: #5c5b57;
   }
   :root[data-theme="dark"] body { background: #1a1a19; }
   * { box-sizing: border-box; }
@@ -60,6 +62,8 @@
   .delta { font-size: 13.5px; font-weight: 650; fill: var(--text-primary); }
   .dnote { font-size: 12.5px; fill: var(--text-muted); }
   .big { fill: var(--text-primary); font-size: 30px; font-weight: 650; }
+  h2 { font-size: 1.15rem; margin: 0 0 4px; font-weight: 650; }
+  .section { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--grid); }
   .foot { color: var(--text-muted); font-size: 0.8125rem; margin: 16px 0 0; line-height: 1.5; }
   details { margin-top: 12px; font-size: 0.875rem; color: var(--text-secondary); }
   summary { cursor: pointer; }
@@ -71,18 +75,28 @@
 </head>
 <body>
 <div class="viz-root">
-  <h1><code>fast</code> mode costs a little accuracy for its speed</h1>
-  <p class="sub">Each panel compares Hibana <code>fast</code> (this recipe's decoding) with the setup it was measured against.</p>
+  <h1>Quality: v1.1.0 against v1.0.0, and stock <code>fast</code> against reference setups</h1>
+  <p class="sub">Top: our own runs of both versions on one Spark. Bottom: Hibana's stock <code>fast</code>, measured by others.</p>
 
-  <ul class="legend" aria-label="Legend">
-    <li><span class="sw" style="background:var(--fast)"></span><b>Hibana <code>fast</code></b> (this recipe)</li>
-    <li><span class="sw" style="background:var(--exact)"></span>Hibana <code>exact</code> (the model's exact outputs)</li>
-    <li><span class="sw" style="background:var(--typical)"></span>Typical recipe (TensorFold, NVFP4 + MTP)</li>
+  <h2>v1.1.0 on this build</h2>
+  <ul class="legend" aria-label="Legend, v1.1.0">
+    <li><span class="sw" style="background:var(--v10)"></span><span>v1.0.0</span></li>
+    <li><span class="sw" style="background:var(--fast)"></span><span><b>v1.1.0 default</b> (<code>TUNING=v1.1</code>)</span></li>
+    <li><span class="sw" style="background:var(--exact11)"></span><span>v1.1.0 exact (<code>TUNING=v1.1-exact</code>)</span></li>
   </ul>
+  <svg id="svg1" viewBox="0 0 1100 420" role="img" aria-label="Four panels. tool-eval-bench score out of 100: v1.0.0 89, v1.1.0 default 89, v1.1.0 exact 93. tool-eval-bench hard mode out of 70: 62, 59, 65. GSM8K, MBPP, tool calls and AIME, 80 questions in total: 77, 78, 77. Agent-session replays that fell into a repetition loop, out of 30: 2, 0, 0."></svg>
+  <p class="foot">Same Spark, same scripts, 2026-11-24 (<code>bench/ab-20261124</code>). tool-eval-bench 3.1.1, seed 42, temperature 0. Suites: GSM8K, MBPP, tool calls and AIME, 20 questions each. Replays: one frozen DeepSeek Harness session run 30 times at temperature 1.0 (v1.0.0 and exact on 2026-11-23); the default's one run that the repetition guard ended early is not counted as a loop. Higher is better except the last panel.</p>
 
-  <svg id="svg" viewBox="0 0 1100 420" role="img" aria-label="Four panels. GPQA-Diamond with thinking: fast 81.8%, exact 84.8%, a 3.0-point gap that is not statistically significant (p 0.51, 99 questions). BFCL single-turn tool calls: fast 87.2, TensorFold 85.8. AgentDojo tasks completed under attack: fast 77.5, TensorFold 85.5. Prompt-injection attacks executed: 1 of 200 for both."></svg>
-
-  <p class="foot">Measured on Hibana's <code>fast</code> profile by others, not re-run on this build. GPQA-Diamond: Hibana's authors, thinking up to 64K tokens, 99 paired questions; <code>fast</code> answers were 18% longer. BFCL, AgentDojo and injection attacks: dedene's agent benchmark. Higher is better except the last panel.</p>
+  <div class="section">
+  <h2>Stock <code>fast</code>, measured by others</h2>
+  <ul class="legend" aria-label="Legend, stock fast">
+    <li><span class="sw" style="background:var(--fast)"></span><span><b>Hibana <code>fast</code></b> (stock, <code>TUNING=stock</code>)</span></li>
+    <li><span class="sw" style="background:var(--exact)"></span><span>Hibana <code>exact</code> (the model's exact outputs)</span></li>
+    <li><span class="sw" style="background:var(--typical)"></span><span>Typical recipe (TensorFold, NVFP4 + MTP)</span></li>
+  </ul>
+  <svg id="svg2" viewBox="0 0 1100 420" role="img" aria-label="Four panels. GPQA-Diamond with thinking: fast 81.8%, exact 84.8%, a 3.0-point gap that is not statistically significant (p 0.51, 99 questions). BFCL single-turn tool calls: fast 87.2, TensorFold 85.8. AgentDojo tasks completed under attack: fast 77.5, TensorFold 85.5. Prompt-injection attacks executed: 1 of 200 for both."></svg>
+  <p class="foot">Measured on Hibana's stock <code>fast</code> profile by others, not re-run on this build. GPQA-Diamond: Hibana's authors, thinking up to 64K tokens, 99 paired questions; <code>fast</code> answers were 18% longer. BFCL, AgentDojo and injection attacks: dedene's agent benchmark. Higher is better except the last panel.</p>
+  </div>
 
   <details>
     <summary>Table view</summary>
@@ -90,66 +104,89 @@
   </details>
 </div>
 <script>
-const PANELS = [
-  { title: 'GPQA-Diamond', note: 'hard science Q&A with thinking, % correct', unit: '%',
-    bars: [{ k: 'fast', label: 'fast', v: 81.8 }, { k: 'exact', label: 'exact', v: 84.8 }],
+const V11 = [
+  { title: 'tool-eval-bench', note: 'tool-use benchmark, score / 100', max: 100, ticks: [0, 25, 50, 75, 100], dec: 0,
+    bars: [{ k: 'v10', label: 'v1.0.0', v: 89 }, { k: 'fast', label: 'default', v: 89, hero: true }, { k: 'exact11', label: 'exact', v: 93 }],
+    delta: 'Same', dnote: 'default 89 · exact 93 (+4)' },
+  { title: 'tool-eval-bench hard mode', note: 'hardest cases passed, of 70', max: 70, ticks: [0, 35, 70], dec: 0,
+    bars: [{ k: 'v10', label: 'v1.0.0', v: 62 }, { k: 'fast', label: 'default', v: 59, hero: true }, { k: 'exact11', label: 'exact', v: 65 }],
+    delta: '−3 / +3', dnote: 'default / exact vs v1.0.0' },
+  { title: 'Math, code, tools', note: 'GSM8K, MBPP, tool calls, AIME, of 80', max: 80, ticks: [0, 40, 80], dec: 0,
+    bars: [{ k: 'v10', label: 'v1.0.0', v: 77 }, { k: 'fast', label: 'default', v: 78, hero: true }, { k: 'exact11', label: 'exact', v: 77 }],
+    delta: '±1', dnote: 'within one question' },
+  { title: 'Agent replays that looped', note: 'out of 30 · lower is better', waffle: 30,
+    bars: [{ k: 'v10', label: 'v1.0.0', v: 2 }, { k: 'fast', label: 'default', v: 0 }, { k: 'exact11', label: 'exact', v: 0 }],
+    delta: '2 → 0', dnote: 'both v1.1.0 modes' },
+];
+const STOCK = [
+  { title: 'GPQA-Diamond', note: 'hard science Q&A with thinking, % correct', unit: '%', max: 100, ticks: [0, 25, 50, 75, 100], dec: 1,
+    bars: [{ k: 'fast', label: 'fast', v: 81.8, hero: true }, { k: 'exact', label: 'exact', v: 84.8 }],
     delta: '−3.0 pts', dnote: 'not significant (p 0.51)' },
-  { title: 'BFCL single-turn', note: 'tool-call accuracy, score', unit: '',
-    bars: [{ k: 'fast', label: 'fast', v: 87.2 }, { k: 'typical', label: 'TensorFold', v: 85.8 }],
+  { title: 'BFCL single-turn', note: 'tool-call accuracy, score', max: 100, ticks: [0, 25, 50, 75, 100], dec: 1,
+    bars: [{ k: 'fast', label: 'fast', v: 87.2, hero: true }, { k: 'typical', label: 'TensorFold', v: 85.8 }],
     delta: '+1.4 pts', dnote: 'vs typical recipe' },
-  { title: 'AgentDojo', note: 'agent tasks done under attack, score', unit: '',
-    bars: [{ k: 'fast', label: 'fast', v: 77.5 }, { k: 'typical', label: 'TensorFold', v: 85.5 }],
+  { title: 'AgentDojo', note: 'agent tasks done under attack, score', max: 100, ticks: [0, 25, 50, 75, 100], dec: 1,
+    bars: [{ k: 'fast', label: 'fast', v: 77.5, hero: true }, { k: 'typical', label: 'TensorFold', v: 85.5 }],
     delta: '−8.0 pts', dnote: 'vs typical recipe' },
-  { title: 'Injection attacks executed', note: 'out of 200 · lower is better', waffle: true,
+  { title: 'Injection attacks executed', note: 'out of 200 · lower is better', waffle: 200,
     bars: [{ k: 'fast', label: 'fast', v: 1 }, { k: 'typical', label: 'TensorFold', v: 1 }],
     delta: 'Same', dnote: '1 of 200 each' },
 ];
-const NS = 'http://www.w3.org/2000/svg', svg = document.getElementById('svg');
-const el = (tag, a, text, parent = svg) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (text != null) e.textContent = text; parent.appendChild(e); return e; };
-const W = 1100, PW = 255, PG = (W - 4 * PW) / 3;
-const TOP = 70, base = 330, ph = base - TOP;
-const y = v => base - (v / 100) * ph;
+const NS = 'http://www.w3.org/2000/svg';
+const W = 1100, PW = 255, PG = (W - 4 * PW) / 3, TOP = 70, base = 330, ph = base - TOP;
 const barPath = (x, t, w, b) => { const r = Math.min(4, (b - t) / 2); return `M${x},${b}V${t + r}Q${x},${t} ${x + r},${t}H${x + w - r}Q${x + w},${t} ${x + w},${t + r}V${b}Z`; };
 
-PANELS.forEach((p, i) => {
-  const x0 = i * (PW + PG);
-  el('text', { x: x0, y: 18, class: 'ptitle' }, p.title);
-  el('text', { x: x0, y: 38, class: 'pnote' }, p.note);
-  if (!p.waffle) {
-    for (const t of [0, 25, 50, 75, 100]) {
-      el('line', { x1: x0 + 30, x2: x0 + PW, y1: y(t), y2: y(t), stroke: t ? 'var(--grid)' : 'var(--axis)', 'stroke-width': 1, 'shape-rendering': 'crispEdges' });
-      el('text', { x: x0 + 22, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' }, t);
-    }
-    const BW = 56, cx = x0 + 30 + (PW - 30) / 2;
-    p.bars.forEach((b, j) => {
-      const bx = cx + (j === 0 ? -BW - 14 : 14);
-      const path = el('path', { d: barPath(bx, y(b.v), BW, base - 1), fill: `var(--${b.k})` });
-      el('title', {}, `${b.label}: ${b.v}${p.unit}`, path);
-      el('text', { x: bx + BW / 2, y: y(b.v) - 8, class: 'val' + (j === 0 ? ' hero' : '') }, b.v.toFixed(1) + p.unit);
-      el('text', { x: bx + BW / 2, y: base + 20, class: 'blab' }, b.label);
-    });
-  } else {
-    // Two 20 x 10 dot grids: 200 attacks each, executed ones filled
-    const R = 4, STEP = 10.6, gw = 10 * STEP;
-    p.bars.forEach((b, j) => {
-      const gx = x0 + 4 + j * (gw + 24), gy = TOP + 8;
-      for (let n = 0; n < 200; n++) {
-        const c = n % 10, r = Math.floor(n / 10);
-        const hit = n >= 200 - b.v;
-        el('circle', hit
-          ? { cx: gx + c * STEP + R, cy: gy + r * STEP + R, r: R + 0.8, fill: `var(--${b.k})`, stroke: 'var(--text-primary)', 'stroke-width': 1.2 }
-          : { cx: gx + c * STEP + R, cy: gy + r * STEP + R, r: R - 0.6, fill: 'none', stroke: 'var(--axis)', 'stroke-width': 1 });
+function render(svg, panels) {
+  const el = (tag, a, text, parent = svg) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (text != null) e.textContent = text; parent.appendChild(e); return e; };
+  panels.forEach((p, i) => {
+    const x0 = i * (PW + PG), unit = p.unit || '';
+    el('text', { x: x0, y: 18, class: 'ptitle' }, p.title);
+    el('text', { x: x0, y: 38, class: 'pnote' }, p.note);
+    const n = p.bars.length;
+    if (!p.waffle) {
+      const y = v => base - (v / p.max) * ph;
+      for (const t of p.ticks) {
+        el('line', { x1: x0 + 30, x2: x0 + PW, y1: y(t), y2: y(t), stroke: t ? 'var(--grid)' : 'var(--axis)', 'stroke-width': 1, 'shape-rendering': 'crispEdges' });
+        el('text', { x: x0 + 22, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' }, t);
       }
-      el('text', { x: gx + gw / 2, y: base + 20, class: 'blab' }, b.label);
-    });
-  }
-  const d = el('text', { x: x0, y: base + 52, class: 'delta' }, p.delta);
-  el('text', { x: x0 + d.getComputedTextLength() + 8, y: base + 52, class: 'dnote' }, p.dnote);
-});
+      const BW = n === 2 ? 56 : 44, GAP = n === 2 ? 28 : 16, cx = x0 + 30 + (PW - 30) / 2, total = n * BW + (n - 1) * GAP;
+      p.bars.forEach((b, j) => {
+        const bx = cx - total / 2 + j * (BW + GAP);
+        const path = el('path', { d: barPath(bx, y(b.v), BW, base - 1), fill: `var(--${b.k})` });
+        el('title', {}, `${b.label}: ${b.v}${unit}`, path);
+        el('text', { x: bx + BW / 2, y: y(b.v) - 8, class: 'val' + (b.hero ? ' hero' : '') }, b.v.toFixed(p.dec) + unit);
+        el('text', { x: bx + BW / 2, y: base + 20, class: 'blab' }, b.label);
+      });
+    } else {
+      // One dot grid per setup, executed/looped ones filled
+      const N = p.waffle, cols = N === 200 ? 10 : 5, rows = N / cols;
+      const STEP = N === 200 ? 10.6 : 13, R = N === 200 ? 4 : 5, gw = cols * STEP, GG = n === 2 ? 24 : 22;
+      const off = (PW - (n * gw + (n - 1) * GG)) / 2;
+      p.bars.forEach((b, j) => {
+        const gx = x0 + Math.max(4, off) + j * (gw + GG), gy = N === 200 ? TOP + 8 : base - rows * STEP - 6;
+        for (let m = 0; m < N; m++) {
+          const c = m % cols, r = Math.floor(m / cols), hit = m >= N - b.v;
+          el('circle', hit
+            ? { cx: gx + c * STEP + R, cy: gy + r * STEP + R, r: R + 0.8, fill: `var(--${b.k})`, stroke: 'var(--text-primary)', 'stroke-width': 1.2 }
+            : { cx: gx + c * STEP + R, cy: gy + r * STEP + R, r: R - 0.6, fill: 'none', stroke: 'var(--axis)', 'stroke-width': 1 });
+        }
+        el('text', { x: gx + gw / 2, y: base + 20, class: 'blab' }, b.label);
+        if (N !== 200) el('text', { x: gx + gw / 2, y: gy - 10, class: 'val' + (b.v === 0 ? ' hero' : '') }, `${b.v}`);
+      });
+    }
+    const d = el('text', { x: x0, y: base + 52, class: 'delta' }, p.delta);
+    el('text', { x: x0 + d.getComputedTextLength() + 8, y: base + 52, class: 'dnote' }, p.dnote);
+  });
+}
+render(document.getElementById('svg1'), V11);
+render(document.getElementById('svg2'), STOCK);
 
-const tbl = document.getElementById('tbl');
-tbl.innerHTML = '<tr><th>Benchmark</th><th>Hibana fast</th><th>Compared with</th><th>Their score</th></tr>' +
-  PANELS.map(p => `<tr><td>${p.title}</td><td class="n">${p.waffle ? '1 of 200' : p.bars[0].v + p.unit}</td><td>${p.bars[1].label === 'exact' ? 'Hibana exact' : 'TensorFold'}</td><td class="n">${p.waffle ? '1 of 200' : p.bars[1].v + p.unit}</td></tr>`).join('');
+const fmt = (p, b) => p.waffle ? `${b.v} of ${p.waffle}` : b.v + (p.unit || '');
+document.getElementById('tbl').innerHTML =
+  '<tr><th>Benchmark</th><th>v1.0.0</th><th>v1.1.0 default</th><th>v1.1.0 exact</th></tr>' +
+  V11.map(p => `<tr><td>${p.title}</td>${p.bars.map(b => `<td class="n">${fmt(p, b)}</td>`).join('')}</tr>`).join('') +
+  '<tr><th>Stock fast (others)</th><th>Hibana fast</th><th>Compared with</th><th>Their score</th></tr>' +
+  STOCK.map(p => `<tr><td>${p.title}</td><td class="n">${fmt(p, p.bars[0])}</td><td>${p.bars[1].label === 'exact' ? 'Hibana exact' : 'TensorFold'}</td><td class="n">${fmt(p, p.bars[1])}</td></tr>`).join('');
 </script>
 </body>
 </html>

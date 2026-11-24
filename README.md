@@ -199,7 +199,7 @@ Put overrides in `.env` (see `.env.example`).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="media/quality-chart-dark.png">
-  <img alt="Quality panels: GPQA-Diamond 81.8% fast vs 84.8% exact (p 0.51); BFCL 87.2 fast vs 85.8 TensorFold; AgentDojo 77.5 vs 85.5; injection attacks executed 1 of 200 for both" src="media/quality-chart-light.png">
+  <img alt="Quality panels. v1.1.0 on this build: tool-eval-bench 89 v1.0.0, 89 v1.1.0 default, 93 v1.1.0 exact; hard mode 62, 59, 65 of 70; GSM8K/MBPP/tool calls/AIME 77, 78, 77 of 80; agent replays that looped 2, 0, 0 of 30. Stock fast, measured by others: GPQA-Diamond 81.8% fast vs 84.8% exact (p 0.51); BFCL 87.2 fast vs 85.8 TensorFold; AgentDojo 77.5 vs 85.5; injection attacks executed 1 of 200 for both" src="media/quality-chart-light.png">
 </picture>
 
 - **v1.1.0 against v1.0.0 on the same day** (details in [bench/ab-20261124](bench/ab-20261124/README.md)):
