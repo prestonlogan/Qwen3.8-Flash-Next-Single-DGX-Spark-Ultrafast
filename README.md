@@ -86,6 +86,8 @@ and raw files: [bench/ab-20261124](bench/ab-20261124/README.md).
 | Prefill, 2,048-token prompt, tok/s | **3,786** | 3,434 | 2,907 |
 | Needle in a haystack to ~254K tokens | 20/20 | | 20/20 |
 
+Long-context results for v1.1.0 (decode at depth, RULER, a compaction agent test) are under [Long context](#long-context).
+
 **Which mode to use.** The default is the fast choice for chat, coding and agents: faster than v1.0.0 on every
 temperature-0 row and on sampled code and images, even on sampled prose (110.7 against 114.5, within the ±25%
 run-to-run spread). `TUNING=v1.1-exact` is for when output must follow the served model exactly (evaluations,
@@ -232,6 +234,27 @@ Put overrides in `.env` (see `.env.example`).
 - Port 8888 is shared with other Spark recipes: stop the one that serves it first.
 - The API has no key check and listens on the LAN. Keep it there.
 - An omitted `temperature` means 1.0 with top_p 0.95 and top_k 20, the model's generation config.
+
+### Long context
+
+v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench/longctx-20261124](bench/longctx-20261124/README.md).
+
+| Context already filled | 0 | 32K | 64K | 100K | 150K | 200K | 250K |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Decode tok/s | 124.2 | 104.2 | 101.4 | 94.1 | 86.0 | 72.1 | 69.4 |
+| Time to first token, uncached | 1.0 s | 11.1 s | 22.5 s | 35.2 s | 53.5 s | 74.7 s | 86.6 s |
+
+- **Decode holds up; prefill is the cost.** Decode is still near 70 tok/s with 250K tokens in context, but an uncached
+  250K prompt waits about 87 s for its first token. Prompts already in the prefix cache skip that.
+- **RULER** (NVIDIA's 13 synthetic tasks, thinking off, temperature 0): average **96.3** at 32K, **94.0** at 64K and
+  **96.4** at 128K. The 8 retrieval tasks scored 100 at every length; the misses are in variable tracking, common-word
+  counting and HotpotQA. Samples are small (5 per task at 32K, 3 at 64K and 128K), and 192K was not run. Common-word
+  counting needed 1,024 output tokens instead of RULER's usual ~128, or the model is still counting when it stops.
+- **An agent task 6 times the context window.** The agent read about 900K tokens of RFCs a page at a time, found 12
+  planted requirements and built a tool from them, through 6 compactions where its history was replaced by its own
+  summary. It passed 24 of 25 hidden checks and finished on its own in 41 minutes. The one failure: during a
+  compaction it wrote down a requirement that is not in the documents, as if quoted, and built it in. Under long
+  agent runs, check what the agent claims it read, not only what it remembers.
 
 ## How it is put together
 
