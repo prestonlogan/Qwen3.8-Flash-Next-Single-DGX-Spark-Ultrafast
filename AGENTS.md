@@ -26,6 +26,8 @@ Hibana's `fast` profile with `TUNING=v1.1` as the default.
     3-bit experts (`HIBANA_MTP_WEIGHTS`, `HIBANA_MTP_W3_EXPERTS*`), GB10 kernels (HyperConnection mix, split-K sparse
     attention, 3-bit GEMM geometry), route renormalization, prefill warmup. The patch header lists which parts are
     opt-in; `tools/serve.sh` turns them on when `TUNING=v1.1` (default) and `PROFILE=fast`.
+- `TUNING=v1.1` uses Hibana's top-3 acceptance rule at temperature 0 (`HIBANA_ACCEPT_DEFAULT=3:2.0`) and
+  `accept_soft` 0.35 when sampling. `TUNING=v1.1-exact` is the same stack with exact acceptance (`exact`, 0.0).
 - `TUNING=stock` reproduces v1.0.0 behavior (Hibana `fast`, `accept_soft` 0.5, stock MTP head, DRAFT_VOCAB 131072).
 
 ## Verify
@@ -56,8 +58,8 @@ tools/check.py                   # all ok, including "image input"
 - Qwen3.8-Flash-Next: 48 layers (36 Gated DeltaNet, 12 attention with a sparse indexer), 512 experts, top 10, MTP head,
   262K context, and a vision tower that upstream Hibana does not load.
 - Hibana loads the trunk as FP8 in every profile. `fast` (default here and in Hibana) serves 3-bit experts and trunk
-  copies and relaxed sampled acceptance (`accept_soft` 0.5); `TUNING=v1.1` switches `fast` to exact acceptance with
-  the distilled draft head. `exact` keeps NVFP4 experts and exact acceptance.
+  copies and relaxed sampled acceptance (`accept_soft` 0.5); `TUNING=v1.1` switches `fast` to `accept_soft` 0.35 with
+  the distilled draft head (`v1.1-exact`: exact acceptance). `exact` keeps NVFP4 experts and exact acceptance.
 - Do not raise `HIBANA_ACCEPT_SOFT` above 0.5: at 1.0-3.0 long thinking runs fell into repetition loops and ended with
   no answer (1 in 5 to 1 in 3 replays of one agent task). Hibana's authors cap Flash-Next at 0.5 too.
 - `HIBANA_DRAFT_VOCAB` (98304 with TUNING=v1.1, 131072 with stock): the MTP drafter reads only the first N rows of the vocabulary head.

@@ -16,8 +16,9 @@ tags:
 A replacement multi-token-prediction (MTP) draft head for Qwen3.8-Flash-Next, used by the
 [Qwen3.8-Flash-Next Single DGX Spark Ultrafast](https://github.com/prestonlogan/Qwen3.8-Flash-Next-Single-DGX-Spark-Ultrafast)
 recipe (v1.1.0 and later) on [Hibana](https://github.com/sharar-project/hibana). The draft head only proposes tokens.
-The target model verifies every proposal, and with exact acceptance the served distribution is the target's own, so a
-better draft head changes speed, not answers.
+The target model verifies every proposal. With exact acceptance (the recipe's `TUNING=v1.1-exact`) the served
+distribution is the target's own, so a better draft head changes speed, not answers. The recipe's default relaxes
+acceptance slightly (`accept_soft` 0.35 when sampling, Hibana's top-3 rule at temperature 0).
 
 | File | Size | SHA-256 | Contents |
 |---|---:|---|---|

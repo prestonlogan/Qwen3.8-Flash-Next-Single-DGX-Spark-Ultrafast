@@ -20,22 +20,26 @@ case ${SSD:-on} in
 esac
 export HIBANA_HOST_FLOOR_GIB=${HOST_FLOOR_GIB:-12}
 
-# TUNING=v1.1 (default, PROFILE=fast only): exact speculative acceptance, the distilled MTP draft head, the repetition
-# guard with its late </think> ramp, and the GB10 kernel and routing settings from patch 0004. TUNING=stock serves
+# TUNING=v1.1 (default, PROFILE=fast only): the distilled MTP draft head, the repetition guard with its late </think>
+# ramp, and the GB10 kernel and routing settings from patch 0004, with lightly relaxed speculative acceptance (Hibana's
+# top-3 rule at temperature 0, accept_soft 0.35 when sampling; v1.0.0 used 0.5). TUNING=v1.1-exact is the same stack
+# with exact acceptance: output follows the served model exactly, slower at temperature 0. TUNING=stock serves
 # Hibana's own `fast` settings, the v1.0.0 behavior. Values already set in the environment win.
 tuning=${TUNING:-v1.1}
 case $tuning in
-  v1.1 | stock) ;;
-  *) echo "TUNING must be v1.1 or stock (got $tuning)" >&2; exit 2 ;;
+  v1.1) accept=(HIBANA_ACCEPT_DEFAULT=3:2.0 HIBANA_ACCEPT_SOFT=0.35) ;;
+  v1.1-exact) accept=(HIBANA_ACCEPT_DEFAULT=exact HIBANA_ACCEPT_SOFT=0.0) ;;
+  stock) ;;
+  *) echo "TUNING must be v1.1, v1.1-exact or stock (got $tuning)" >&2; exit 2 ;;
 esac
-if [[ $profile == fast && $tuning == v1.1 ]]; then
+if [[ $profile == fast && $tuning == v1.1* ]]; then
   head_dir=${HIBANA_RESULTS:-/data}/w3-checkpoints
   for f in mtp-t35-overlap-body.pt mtp-t35-overlap-w3exp.pt; do
-    [[ -s $head_dir/$f ]] || { echo "TUNING=v1.1 needs $head_dir/$f (the download service fetches it)" >&2; exit 2; }
+    [[ -s $head_dir/$f ]] || { echo "TUNING=$tuning needs $head_dir/$f (the download service fetches it)" >&2; exit 2; }
   done
   v11=(
-    # Speculation: lossless acceptance, the distilled draft head, a measured draft-step cost.
-    HIBANA_ACCEPT_DEFAULT=exact HIBANA_ACCEPT_SOFT=0.0 HIBANA_SPEC_STEP_COST=0.055 HIBANA_VISION_SPEC=1
+    # Speculation: acceptance rule for this TUNING, the distilled draft head, a measured draft-step cost.
+    "${accept[@]}" HIBANA_SPEC_STEP_COST=0.055 HIBANA_VISION_SPEC=1
     HIBANA_MTP_WEIGHTS=$head_dir/mtp-t35-overlap-body.pt HIBANA_MTP_W3_EXPERTS=1
     HIBANA_MTP_W3_EXPERTS_PATH=$head_dir/mtp-t35-overlap-w3exp.pt
     # Precision and routing.
@@ -55,7 +59,7 @@ if [[ $profile == fast && $tuning == v1.1 ]]; then
 fi
 # Draft vocabulary shortlist: 98,304 rows for the distilled head (v1.1), 131,072 for the stock head (v1.0.0).
 if [[ -z ${HIBANA_DRAFT_VOCAB:-} ]]; then
-  [[ $tuning == v1.1 ]] && export HIBANA_DRAFT_VOCAB=98304 || export HIBANA_DRAFT_VOCAB=131072
+  [[ $tuning == v1.1* ]] && export HIBANA_DRAFT_VOCAB=98304 || export HIBANA_DRAFT_VOCAB=131072
 fi
 
 args=(

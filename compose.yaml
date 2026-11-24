@@ -54,7 +54,7 @@ services:
       <<: *paths
       HF_HUB_OFFLINE: "1"
       PROFILE: ${PROFILE:-fast}
-      # v1.1 (default): exact acceptance, distilled draft head, repetition guard, GB10 kernels (tools/serve.sh).
+      # v1.1 (default): distilled draft head, repetition guard, GB10 kernels, accept_soft 0.35; v1.1-exact; stock (tools/serve.sh).
       # stock: Hibana's own fast settings, as in v1.0.0.
       TUNING: ${TUNING:-v1.1}
       PROPOSER: ${PROPOSER:-mtp}

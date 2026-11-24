@@ -1,0 +1,31 @@
+[T94_s035_relaxed] ( 1/30) lf-01-story-bare         PASS ptok=15940 ttft=  7546ms tok= 2189 tps= 82.7 tsteps=0 r_ng7= 2 c_ng7= 1 
+[T94_s035_relaxed] ( 2/30) ag-01-floating-island    PASS ptok=15992 ttft=  4837ms tok= 1044 tps=126.8 tsteps=3 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] ( 3/30) lf-02-story-lighthouse   PASS ptok=15957 ttft=  1568ms tok= 5748 tps= 80.8 tsteps=0 r_ng7= 1 c_ng7= 2 
+[T94_s035_relaxed] ( 4/30) ag-02-asar-changelog     PASS ptok=15976 ttft=  1566ms tok= 1051 tps=125.6 tsteps=3 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] ( 5/30) mx-01-code-dag           PASS ptok=15974 ttft=  1547ms tok= 8192 tps= 99.1 tsteps=0 r_ng7= 2 c_ng7= 2 
+[T94_s035_relaxed] ( 6/30) lf-03-story-oort         PASS ptok=15968 ttft=  1537ms tok= 9020 tps= 97.8 tsteps=0 r_ng7= 4 c_ng7= 0 
+[T94_s035_relaxed] ( 7/30) ag-03-rejection-bugfix   PASS ptok=15982 ttft=  1562ms tok= 1247 tps=119.4 tsteps=3 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] ( 8/30) lf-04-essay-wal          PASS ptok=15965 ttft=  1555ms tok=16384 tps= 82.0 tsteps=0 r_ng7= 2 c_ng7= 2 
+[T94_s035_relaxed] ( 9/30) ag-04-empty-grep-pivot   PASS ptok=15969 ttft=  1654ms tok=  580 tps=135.9 tsteps=3 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (10/30) mx-08-img-grid           PASS ptok=16399 ttft=  3000ms tok=  842 tps= 93.4 tsteps=0 r_ng7= 2 c_ng7= 0 
+[T94_s035_relaxed] (11/30) lf-05-story-watchmaker   PASS ptok=15963 ttft=  1677ms tok= 3549 tps= 79.2 tsteps=0 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (12/30) lf-06-essay-sm121        PASS ptok=15968 ttft=  1574ms tok= 2351 tps= 91.0 tsteps=0 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (13/30) lf-07-story-submarine    PASS ptok=15961 ttft=  1589ms tok=14207 tps= 84.8 tsteps=0 r_ng7= 2 c_ng7= 2 
+[T94_s035_relaxed] (14/30) lf-08-essay-specdec      PASS ptok=15966 ttft=  1631ms tok=10339 tps= 99.6 tsteps=0 r_ng7= 5 c_ng7= 1 
+[T94_s035_relaxed] (15/30) lf-09-story-cartographer PASS ptok=15961 ttft=  1645ms tok= 7287 tps= 82.9 tsteps=0 r_ng7= 3 c_ng7= 2 
+[T94_s035_relaxed] (16/30) lf-10-postmortem-essay   PASS ptok=15969 ttft=  1550ms tok=  235 tps=145.9 tsteps=0 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (17/30) ag-05-ci-oom-triage      PASS ptok=15978 ttft=  1550ms tok= 1283 tps=116.8 tsteps=3 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (18/30) ag-06-docker-build-fix   PASS ptok=15979 ttft=  1562ms tok= 2384 tps=113.9 tsteps=3 r_ng7= 3 c_ng7= 1 
+[T94_s035_relaxed] (19/30) ag-07-nginx-timeout      PASS ptok=15976 ttft=  1540ms tok= 1054 tps=119.6 tsteps=3 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (20/30) ag-08-sql-slow-query     PASS ptok=15978 ttft=  1523ms tok= 1015 tps=116.1 tsteps=3 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (21/30) ag-09-refactor-parser    PASS ptok=15979 ttft=  1549ms tok=  609 tps=128.7 tsteps=3 r_ng7= 1 c_ng7= 1 
+[T94_s035_relaxed] (22/30) ag-10-test-coverage      PASS ptok=15987 ttft=  1619ms tok=  563 tps=125.0 tsteps=3 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (23/30) mx-02-code-ringbuf       PASS ptok=15979 ttft=  1526ms tok=  312 tps=137.3 tsteps=0 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (24/30) mx-03-code-parser        PASS ptok=15963 ttft=  1519ms tok= 1204 tps=104.0 tsteps=0 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (25/30) mx-04-reason-comb        PASS ptok=15986 ttft=  1585ms tok= 7505 tps=132.0 tsteps=0 r_ng7= 9 c_ng7= 4 
+[T94_s035_relaxed] (26/30) mx-05-reason-mod         PASS ptok=15979 ttft=  1558ms tok= 1198 tps=145.8 tsteps=0 r_ng7= 1 c_ng7= 0 
+[T94_s035_relaxed] (27/30) mx-06-reason-prob        PASS ptok=15980 ttft=  1544ms tok= 4182 tps=115.3 tsteps=0 r_ng7= 4 c_ng7= 0 
+[T94_s035_relaxed] (28/30) mx-07-reason-lis         PASS ptok=15977 ttft=  1598ms tok= 5696 tps= 98.6 tsteps=0 r_ng7= 3 c_ng7= 1 
+[T94_s035_relaxed] (29/30) mx-09-img-ocr            PASS ptok=16210 ttft=  1805ms tok= 1229 tps= 79.1 tsteps=0 r_ng7= 2 c_ng7= 0 
+[T94_s035_relaxed] (30/30) mx-10-img-shapes         PASS ptok=16261 ttft=  1730ms tok=  270 tps=116.3 tsteps=0 r_ng7= 1 c_ng7= 0 
+=== DSH_SAMPLED_GATE_30_FAIL [T94_s035_relaxed]: loops=0/30 guard_fires=2 mean_tps=109.2 med_tps=115.3 mean_ttft=1941.4ms health=True killed=False ===

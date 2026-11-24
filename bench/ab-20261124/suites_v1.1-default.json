@@ -1,0 +1,31 @@
+{
+  "mbpp": {
+    "math": {
+      "pass": 19,
+      "incomplete": 1
+    },
+    "code": {
+      "pass": 19,
+      "fail": 1
+    },
+    "prose": {
+      "review": 3
+    }
+  },
+  "tools": {
+    "counts": {
+      "pass": 20
+    },
+    "pass": 20,
+    "total": 20
+  },
+  "aime": {
+    "counts": {
+      "pass": 20
+    },
+    "pass": 20,
+    "total": 20,
+    "mean_tokens": 1524.5,
+    "max_line_rep": 1
+  }
+}

@@ -29,7 +29,7 @@ if w3 is None:
 print(f"present: RadixArk/Qwen3.8-Flash-Next-NVFP4, 3-bit copies in {w3}")
 PY
 
-[[ ${TUNING:-v1.1} == v1.1 ]] || exit 0
+[[ ${TUNING:-v1.1} == v1.1* ]] || exit 0
 DRAFT_HEAD_REPO=${DRAFT_HEAD_REPO:-prestonlogan/Qwen3.8-Flash-Next-MTP-Draft-Head} python - <<'PY'
 import hashlib, os, shutil, sys
 from pathlib import Path

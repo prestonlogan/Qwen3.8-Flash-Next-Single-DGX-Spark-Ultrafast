@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Qwen3.8-Flash-Next on one NVIDIA DGX Spark: 101 tok/s on prose, 2.2× the typical Flash-Next setup on the same box. 133 tok/s on code, 253 tok/s total across 4 requests, about 3,300 tok/s prefill at 8K–32K. Bar chart of decode speed against the typical recipe (TensorFold, NVFP4 + MTP): prose 101.3 vs 46.6, code 133.3 vs 58.3, 4 requests 252.9 vs 97.3." src="media/header.png">
+  <img alt="Qwen3.8-Flash-Next on one NVIDIA DGX Spark, v1.1.0: 132 tok/s on prose, 2.8× the typical Flash-Next setup on the same box. 154 tok/s on code, 296 tok/s total across 4 requests, 109 tok/s mean over 30 sampled agent sessions. Bar chart of decode speed against the typical recipe (TensorFold, NVFP4 + MTP): prose 132.4 vs 46.6, code 153.6 vs 58.3, 4 requests 296.3 vs 97.3." src="media/header.png">
 </p>
 
 <p align="center">
@@ -15,9 +15,11 @@ Most Qwen3.8-Flash-Next recipes reach ~45–50 tok/s on a Spark (vLLM/SGLang/Ten
 and adds **image input** for Flash-Next, which upstream Hibana does not load. OpenAI- and Anthropic-compatible API on
 port 8888, thinking and tool calls included.
 
-> **v1.1.0:** exact speculative acceptance by default, so drafting no longer changes what the model says, plus a
-> distilled draft head, a repetition guard and GB10 kernels. Same sampled speed as v1.0.0, 0 of 30 looping agent
-> sessions (v1.0.0: 2 of 30), tool-eval-bench 93 (v1.0.0: 89). See [v1.0.0 vs v1.1.0](#v100-vs-v110).
+> **v1.1.0:** a distilled draft head, a repetition guard and GB10 kernels, in two modes. The default
+> (`TUNING=v1.1`) is 28% faster on prose and 23% faster on code than v1.0.0 at temperature 0, and 12% faster across 30
+> sampled agent sessions with no looping run (v1.0.0: 2 of 30). `TUNING=v1.1-exact` keeps drafting from changing what
+> the model says and scores higher on tool-eval-bench (93 against 89), at about v1.0.0's sampled speed. See
+> [v1.0.0 vs v1.1.0](#v100-vs-v110).
 
 > Built on [**dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark**](https://github.com/dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark)
 > by Peter Dedene, which did the Hibana Docker recipe, the tool-call fix and the speed and agent benchmarks below. This
@@ -32,72 +34,79 @@ port 8888, thinking and tool calls included.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="media/speed-chart-dark.png">
-  <img alt="Bar chart: this recipe streams 101.3 tok/s on English prose vs 46.6 for a typical recipe, 133.3 vs 58.3 on code, 101.8 on prose about an image, and 252.9 vs 97.3 total with 4 requests at once" src="media/speed-chart-light.png">
+  <img alt="Bar chart: this recipe (v1.1.0) streams 132.4 tok/s on English prose vs 46.6 for a typical recipe, 153.6 vs 58.3 on code, 114.0 on prose about an image, and 296.3 vs 97.3 total with 4 requests at once" src="media/speed-chart-light.png">
 </picture>
 
 <details>
 <summary><b>Exact numbers</b></summary>
 
-| tok/s, one DGX Spark | Typical recipe (TensorFold, NVFP4 + MTP) | Hibana `exact` | **This recipe** (Hibana `fast` + images) |
+| tok/s, one DGX Spark | Typical recipe (TensorFold, NVFP4 + MTP) | Hibana `exact` | **This recipe** (v1.1.0, Hibana `fast` + images) |
 |---|---:|---:|---:|
-| English prose, 1 request | 46.6 | 45.2 | **101.3** |
-| Code, 1 request | 58.3 | 50.7 | **133.3** |
-| Prose about an image, 1 request | no images | no images | **101.8** |
-| 4 requests at once, total | 97.3 | 96.6 | **252.9** |
-| Prose, sampled (temperature 1.0), 1 request | | | 82.2 |
-| Code, sampled (temperature 1.0), 1 request | | | 114.3 |
-| Prose about an image, sampled, 1 request | | | 84.5 |
-| 4 requests, sampled, total | | | 204.2 |
+| English prose, 1 request | 46.6 | 45.2 | **132.4** |
+| Code, 1 request | 58.3 | 50.7 | **153.6** |
+| Prose about an image, 1 request | no images | no images | **114.0** |
+| 4 requests at once, total | 97.3 | 96.6 | **296.3** |
+| Prose, sampled (temperature 1.0), 1 request | | | 110.7 |
+| Code, sampled (temperature 1.0), 1 request | | | 122.7 |
+| Prose about an image, sampled, 1 request | | | 90.1 |
+| 4 requests, sampled, total | | | 205.0 |
 
 </details>
 
 Decode speed, timed from the first output token, thinking on (the default). Temperature 0 unless marked, 512 output
 tokens (1,024 for sampled rows), median of 3 runs (5 for single sampled rows). This recipe's column was measured
-2026-11-20 on its default settings (`PROFILE=fast`, `VISION=1`, `DRAFT_VOCAB=131072`). The TensorFold and `exact`
-columns are dedene's measurements from 2026-11-16
+2026-11-24 on its default settings (`PROFILE=fast`, `TUNING=v1.1`, `VISION=1`). The TensorFold and `exact` columns are
+dedene's measurements from 2026-11-16
 ([MiaAI-Lab TensorFold recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold) on NVIDIA's
-FP4-Local checkpoint), same prompt types and method. dedene measured Hibana `fast` at 102.0 on prose and 123.2 on code
-without the draft-vocabulary setting, so the text speed is Hibana's, not this repo's.
+FP4-Local checkpoint), same prompt types and method. dedene measured Hibana's stock `fast` at 102.0 on prose and 123.2
+on code; the rest of the gain comes from this repo's v1.1.0 draft head and kernels.
 
 Sampled requests are slower because fewer drafted tokens survive verification at temperature 1.0. Prefill is
-~3,200–3,500 tok/s at 8K–32K prompts (dedene's numbers).
+about 3,400 tok/s at 2K tokens in v1.1.0, slower than v1.0.0 (see [limits](#quality-and-limits)).
 
 ### v1.0.0 vs v1.1.0
 
-Same Spark, same night (2026-11-24), each from a fresh boot, `bench/bench.py` medians in tok/s. Full results, method
+Same Spark, same day (2026-11-24), each from a fresh boot, `bench/bench.py` medians in tok/s. Full results, method
 and raw files: [bench/ab-20261124](bench/ab-20261124/README.md).
 
-| | v1.0.0 | **v1.1.0** (default) | v1.1.0 with v1.0.0's relaxed temperature-0 rule |
+| | v1.0.0 | **v1.1.0** (default, `TUNING=v1.1`) | v1.1.0 exact (`TUNING=v1.1-exact`) |
 |---|---:|---:|---:|
-| Prose, temperature 0 | 103.5 | 107.4 | 121.8 |
-| Code, temperature 0 | 124.6 | 92.6 | 144.9 |
-| Prose about an image, temperature 0 | 106.1 | 81.6 | 121.5 |
-| 4 requests, temperature 0, total | 255.6 | 222.1 | 306.5 |
-| Prose, temperature 1.0 | 114.5 | 98.2 | |
-| Code, temperature 1.0 | 106.1 | 106.6 | |
-| Prose about an image, temperature 1.0 | 87.6 | 79.2 | |
-| 4 requests, temperature 1.0, total | 195.8 | 197.1 | |
-| Time to first token, 17.9K-token uncached prompt, first after boot | 6.4 s | 7.9 s | |
-| tool-eval-bench (hard mode on) / hard mode | 89 / 62 of 70 | **93 / 65 of 70** | |
-| Agent-session replays that looped, temperature 1.0 | 2 of 30 | **0 of 30** | |
-| Needle in a haystack to ~254K tokens | 20/20 | 20/20 | |
+| Prose, temperature 0 | 103.5 | **132.4** | 107.4 |
+| Code, temperature 0 | 124.6 | **153.6** | 92.6 |
+| Prose about an image, temperature 0 | 106.1 | **114.0** | 81.6 |
+| 4 requests, temperature 0, total | 255.6 | **296.3** | 222.1 |
+| Prose, temperature 1.0 | **114.5** | 110.7 | 98.2 |
+| Code, temperature 1.0 | 106.1 | **122.7** | 106.6 |
+| Prose about an image, temperature 1.0 | 87.6 | **90.1** | 79.2 |
+| 4 requests, temperature 1.0, total | 195.8 | **205.0** | 197.1 |
+| 30 agent-session replays, temperature 1.0: mean tok/s | 97.2 | **109.2** | 99.8 |
+| ... runs that looped | 2 of 30 | **0 of 30** (guard stopped 1) | **0 of 30** |
+| tool-eval-bench (hard mode on) / hard mode | 89 / 62 of 70 | 89 / 59 of 70 | **93 / 65 of 70** |
+| GSM8K / MBPP / tool calls / AIME (each of 20) | 18 / 20 / 19 / 20 | 19 / 19 / 20 / 20 | 18 / 19 / 20 / 20 |
+| Prefill, 2,048-token prompt, tok/s | **3,786** | 3,434 | 2,907 |
+| Needle in a haystack to ~254K tokens | 20/20 | | 20/20 |
 
-v1.0.0 relaxes acceptance in both modes: at temperature 0 it keeps a drafted token that is in the model's top 3 and
-close in score, and at temperature 1.0 it accepts near-misses (`accept_soft` 0.5). Both shift the output away from the
-model's own. v1.1.0 accepts only what the model itself would produce. On the same relaxed rule its engine is 15-20%
-faster (third column); with exact acceptance it matches v1.0.0 on sampled requests and is slower on temperature-0
-code and images. Sampled single-request runs vary by up to ±25% on both versions. Prefill is slower in v1.1.0 (see
-[limits](#quality-and-limits)). `TUNING=stock` serves the v1.0.0 behavior.
+**Which mode to use.** The default is the fast choice for chat, coding and agents: faster than v1.0.0 on every
+temperature-0 row and on sampled code and images, even on sampled prose (110.7 against 114.5, within the ±25%
+run-to-run spread). `TUNING=v1.1-exact` is for when output must follow the served model exactly (evaluations,
+reproducible runs) or when tool-call safety matters most: it scored 4 points higher on tool-eval-bench, and the
+default had one more safety warning than v1.0.0 (it disclosed a token under a multi-hop prompt injection).
+
+What the modes change: speculative decoding drafts several tokens and the model checks them. Exact acceptance keeps a
+draft only when it is what the model would have produced. The default relaxes that a little: at temperature 0 it
+keeps a draft that is in the model's top 3 and close in score (as v1.0.0 does), and at temperature 1.0 it accepts
+near-misses with `accept_soft` 0.35 (v1.0.0: 0.5). In one of the default's 30 agent replays the repetition guard
+stopped a loop at about 5,500 thinking tokens; the run ended early instead of looping. `TUNING=stock` serves the
+v1.0.0 behavior.
 
 ### Why it is fast
 
 Hibana's `fast` profile serves the 512 experts as calibrated 3-bit copies and the trunk in FP8, so each token reads far
 fewer bytes from the Spark's 273 GB/s memory. The checkpoint's MTP head drafts several tokens per step, and the model
-verifies them in one pass. v1.1.0 replaces that head with one distilled to match the model's own choices more
-often (so more drafts survive exact verification), keeps the head's 512 experts in 3-bit form, and adds GB10 kernels
-for the HyperConnection mix, split-K sparse attention and the 3-bit matrix multiply. With `TUNING=stock`, sampled
-requests instead accept a drafted token when the model gives it a probability close to its own choice
-(`accept_soft` 0.5), Hibana's `fast` default.
+verifies them in one pass. v1.1.0 replaces that head with one distilled to match the model's own choices more often
+(so more drafts survive verification), keeps the head's 512 experts in 3-bit form, and adds GB10 kernels for the
+HyperConnection mix, split-K sparse attention and the 3-bit matrix multiply. The default then accepts slightly more
+drafts than exact verification would (see above).
 
 ## Quickstart
 
@@ -139,7 +148,7 @@ Anthropic-style `image` blocks with a base64 source work too.
 
 | | dedene's recipe | This recipe |
 |---|---|---|
-| Default profile | `exact` (lossless, ~47 tok/s) | `fast` with exact acceptance (`TUNING=v1.1`) |
+| Default profile | `exact` (lossless, ~47 tok/s) | `fast` with the v1.1.0 stack (`TUNING=v1.1`; `v1.1-exact` for exact acceptance) |
 | Image input | no (vision tower not loaded) | **yes** (`patches/0002`, `patches/0003`) |
 | Image requests use MTP drafting and CUDA graphs | — | yes |
 | Draft vocabulary shortlist | off | on (98,304 rows) |
@@ -160,7 +169,7 @@ Anthropic-style `image` blocks with a base64 source work too.
   low n-gram novelty over a long window), aware of code fences and tool calls; a `</think>` bias that starts at 40% of
   `max_tokens` and grows firm by 70%, so long reasoning still ends with an answer; the GB10 kernels above; routing
   renormalization; and a 2K/4K-token prefill warmup at startup. The patch header lists which parts are always on
-  (kernels, warmup) and which `TUNING=v1.1` switches on.
+  (kernels, warmup) and which `TUNING=v1.1` and `v1.1-exact` switch on.
 
 All four patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
 
@@ -171,9 +180,9 @@ Put overrides in `.env` (see `.env.example`).
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROFILE` | `fast` | `fast`: 3-bit experts, ~2× faster than `exact`. `exact`: NVFP4 experts, the checkpoint's own outputs. `throughput`: `fast` tuned for many requests |
-| `TUNING` | `v1.1` | With `PROFILE=fast`: `v1.1` turns on exact acceptance, the distilled draft head, the repetition guard and the patch 0004 settings. `stock` serves Hibana's own `fast` (relaxed acceptance), as in v1.0.0 |
+| `TUNING` | `v1.1` | With `PROFILE=fast`: `v1.1` turns on the distilled draft head, the repetition guard and the patch 0004 settings, with lightly relaxed acceptance (top-3 at temperature 0, `accept_soft` 0.35). `v1.1-exact` is the same with exact acceptance. `stock` serves Hibana's own `fast`, as in v1.0.0 |
 | `VISION` | `1` | `1` loads the vision tower (0.84 GiB) and accepts images; `0` serves text only |
-| `DRAFT_VOCAB` | 98,304 (`v1.1`), 131,072 (`stock`) | The drafter picks from the most common tokens (+3–10% on English and code in our tests); verification still uses the full vocabulary. Set `0` for mostly non-English text |
+| `DRAFT_VOCAB` | 98,304 (`v1.1*`), 131,072 (`stock`) | The drafter picks from the most common tokens (+3–10% on English and code in our tests); verification still uses the full vocabulary. Set `0` for mostly non-English text |
 | `DRAFT_HEAD_REPO` | `prestonlogan/Qwen3.8-Flash-Next-MTP-Draft-Head` | Hugging Face repo the download service fetches the distilled draft head from (SHA-256 checked) |
 | `PROPOSER` | `mtp` | `mtp` (the checkpoint's MTP head) or `dflash2` (incoai's DFlash2 drafter, 1.2 GB more; not tested with images) |
 | `SPEC` | profile's | Draft tokens per round; `0` turns speculation off |
@@ -193,28 +202,27 @@ Put overrides in `.env` (see `.env.example`).
   <img alt="Quality panels: GPQA-Diamond 81.8% fast vs 84.8% exact (p 0.51); BFCL 87.2 fast vs 85.8 TensorFold; AgentDojo 77.5 vs 85.5; injection attacks executed 1 of 200 for both" src="media/quality-chart-light.png">
 </picture>
 
-- **v1.1.0 on the same night as v1.0.0** (details in [bench/ab-20261124](bench/ab-20261124/README.md)):
-  tool-eval-bench 93 vs 89 (hard mode 65 vs 62 of 70), GSM8K 18 vs 18, MBPP 19 vs 20, tool calls 20 vs 19, AIME 20
-  vs 20 (all of 20, temperature 0), needle in a haystack 20/20 for both up to ~254K tokens. In a 30-run replay of an
-  agent session at temperature 1.0, v1.0.0 fell into a repetition loop twice and v1.1.0 never did; on one long
-  reasoning prompt v1.1.0 thought for 7,626 tokens before answering against 26,112 for v1.0.0.
-- **Exact acceptance is not the `exact` profile.** `TUNING=v1.1` makes drafting lossless, but the target model is
-  still `fast`'s 3-bit experts with a routing budget, so outputs differ slightly from `PROFILE=exact`. The numbers
+- **v1.1.0 against v1.0.0 on the same day** (details in [bench/ab-20261124](bench/ab-20261124/README.md)):
+  tool-eval-bench 89 for the default and 93 for `v1.1-exact` against 89 (hard mode 59 and 65 against 62 of 70). The
+  default had safety warnings on TC-51, TC-74 and TC-98 (v1.0.0: TC-51, TC-85; exact: TC-51). GSM8K, MBPP, tool calls
+  and AIME (20 each, temperature 0) are within one question across all three. In 30 replays of an agent session at
+  temperature 1.0, v1.0.0 fell into a repetition loop twice and neither v1.1.0 mode did. On one long reasoning prompt
+  `v1.1-exact` thought for 7,626 tokens before answering against 26,112 for v1.0.0.
+- **Exact acceptance is not the `exact` profile.** `TUNING=v1.1-exact` makes drafting lossless, but the target model
+  is still `fast`'s 3-bit experts with a routing budget, so outputs differ slightly from `PROFILE=exact`. The numbers
   below are for Hibana's stock `fast` (`TUNING=stock`).
 - **Stock `fast` is slightly lossy.** Hibana's authors measured GPQA-Diamond with thinking at 81.8% in `fast` against 84.8% in
   `exact` (99 questions, p 0.51), with answers 18% longer. dedene's agent benchmark on `fast`: BFCL single-turn 87.2
   (TensorFold 85.8), AgentDojo tasks done under attack 77.5 (TensorFold 85.5), 1 of 200 injection attacks executed (same
   as TensorFold). Use `PROFILE=exact` when you need the model's exact outputs.
-- **v1.1.0 prefills more slowly.** Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s for
-  v1.0.0 (about 10-35% longer across our runs); prompts already in the prefix cache are unaffected (0.18 s).
-- **Temperature-0 speed in v1.1.0.** Exact acceptance is slower than v1.0.0's relaxed greedy rule on code and
-  images. A client that accepts near-greedy output can send `"accept_top_k": 3, "accept_margin": 2.0` per request for
-  the third column of the table above.
+- **v1.1.0 prefills more slowly.** At 2,048 tokens it prefilled at 3,434 (default) and 2,907 (exact) tok/s against
+  3,786 for v1.0.0. Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s (about 10-35% longer
+  across our runs); prompts already in the prefix cache are unaffected (0.18 s).
 - **The repetition guard ends a generation that is looping** (finish reason `stop`) instead of letting it run to
   `max_tokens`. Set `HIBANA_THINK_GUARD=0` to turn it off.
-- **Don't raise `HIBANA_ACCEPT_SOFT` above 0.5.** At 1.0–3.0 decoding is 20–60% faster, but in our tests long thinking
-  fell into repetition loops and ended with no answer in 1 of 5 to 1 of 3 runs of an agent task. 0.5 had none.
-  Hibana's authors use 0.5 for Flash-Next too.
+- **Don't raise `HIBANA_ACCEPT_SOFT` above the default.** At 1.0–3.0 decoding is 20–60% faster, but in our tests long
+  thinking fell into repetition loops and ended with no answer in 1 of 5 to 1 of 3 runs of an agent task. v1.1.0 uses
+  0.35; Hibana's own `fast` and v1.0.0 use 0.5.
 - **Images:** inline base64 only, up to 32 MiB encoded and 100 per request, each resized to at most 1,048,576 pixels.
   No video. One Spark only (no two-Spark tensor parallel with vision). Checked with our own text and image prompts
   (`tools/check.py` and a 22-prompt correctness set); no standard image benchmark (MMMU, ChartQA) has been run yet.
