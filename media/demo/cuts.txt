@@ -1,0 +1,3 @@
+# Clips for media/dsh-agentic-demo.*, in seconds since Send (take of 2026-11-24 1:22 PM, v1.1.0 TUNING=v1.1, effort Xhigh).
+# One real-time clip, no speed-up: the middle of the 34 s run (first 15 s and last 10 s of the full take trimmed).
+12.0   26.6   # agent working: files written, tests, CLI output streaming; footer tok/s visible
