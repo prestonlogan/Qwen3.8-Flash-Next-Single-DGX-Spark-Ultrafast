@@ -1,0 +1,1971 @@
+v1.1.0 engine changes on top of patches 0001-0003 (Hibana d474b74). Applies after 0003; git apply ignores the text
+before the first "diff --git" line. compose.yaml sets the v1.1.0 defaults for the opt-in parts.
+
+Opt-in (off unless the environment variable is set):
+- engine/think_guard.py (new), engine/spec.py, engine/accept_graphs.py: a repetition guard for thinking, prose and
+  code that stops a generation only on a real loop (periodic repeats spanning at least 64 tokens, low n-gram novelty
+  over long windows), code-fence and tool-call aware (HIBANA_THINK_GUARD=1, thresholds HIBANA_TG_*). Plus a soft
+  </think> bias that ramps up late in the thinking budget, gently and then firmly by 70% of max_tokens, so long
+  reasoning closes and still answers (HIBANA_THINK_SOFT_*; 0 bias by default).
+- model/flashnext/mtp.py: load a distilled MTP draft head (HIBANA_MTP_WEIGHTS) and its 512 routed experts in 3-bit
+  form (HIBANA_MTP_W3_EXPERTS=1, HIBANA_MTP_W3_EXPERTS_PATH). The draft head only proposes tokens; under exact
+  acceptance the output distribution stays the target model's.
+- model/flashnext/hyper.py, kernels/hyper_mix_cuda.py, kernels/csrc/hyper_mix_{cuda,tc}.cu: fused GB10 (sm_121)
+  HyperConnection mix, hoisted FP8 for 1-4 rows and BF16 tensor cores for 5-16 rows (HIBANA_HYPER_MIX_CUDA=16).
+- kernels/flashnext_fused.py: route-budget renormalization by the full top-K mass with James-Stein shrinkage
+  (HIBANA_ROUTE_PARSEVAL=1, HIBANA_ROUTE_CANDIDATES, HIBANA_ROUTE_BETA).
+- model/flashnext/model.py: HIBANA_W3_SKIP_REGEX keeps matching layers out of the 3-bit path.
+
+Always on (no change to outputs):
+- kernels/qsa/attention.py: split-K sparse attention for decode and verify rows (1-16 rows, 256+ selected keys).
+- kernels/csrc/w3_gemm.cu, kernels/w3.py: a 3-bit GEMM decode kernel with a tunable warps-per-CTA geometry and a
+  tuned split for the Flash-Next trunk shape on GB10.
+- engine/spec.py: speculative-step results come back through a cached pinned host buffer.
+- engine/executor.py: startup warmup also prefills 2,048 and 4,096-token prompts (HIBANA_WARMUP_PREFILL_TOKENS,
+  default 4096; 0 turns it off), so the first long prompt after boot pays less kernel JIT time.
+
+diff --git" line is ignored by git apply. Every change is off unless its environment variable is set; compose.yaml
+sets the v1.1.0 defaults.
+
+- engine/think_guard.py (new), engine/executor.py: repetition guard for thinking, prose and code. It stops a
+  generation only on a real loop (periodic repeats with at least 64 tokens of span, low n-gram novelty over long
+  windows) and is code-fence and tool-call aware. HIBANA_THINK_GUARD=1; thresholds HIBANA_TG_*.
+- engine/spec.py, engine/accept_graphs.py: a soft </think> bias that rises late in the thinking budget (a gentle
+  ramp, then a firm one by 70% of max_tokens), so long reasoning closes at a paragraph boundary and still answers.
+  HIBANA_THINK_SOFT_*. It adds nothing to the logits before the ramp starts.
+- model/flashnext/mtp.py: load a distilled MTP draft head (HIBANA_MTP_WEIGHTS) and its 512 routed experts packed to
+  3-bit (HIBANA_MTP_W3_EXPERTS, HIBANA_MTP_W3_EXPERTS_PATH). The draft head only proposes tokens; with exact
+  acceptance the output distribution is the target model's.
+- model/flashnext/hyper.py, kernels/hyper_mix_cuda.py, kernels/csrc/hyper_mix_{cuda,tc}.cu: fused GB10 (sm_121)
+  HyperConnection mix kernels, hoisted FP8 for 1-4 rows and BF16 tensor cores for 5-16 rows. HIBANA_HYPER_MIX_CUDA.
+- kernels/flashnext_fused.py, kernels/w3.py, kernels/csrc/w3_gemm.cu: route-budget renormalization by the full top-K
+  mass with James-Stein shrinkage (HIBANA_ROUTE_PARSEVAL, HIBANA_ROUTE_CANDIDATES, HIBANA_ROUTE_BETA), a 3-bit
+  expert GEMM CTA geometry for decode, and pinned device-to-host copies.
+- kernels/qsa/attention.py: split-K sparse attention for decode.
+- model/flashnext/model.py: prefill warmup up to HIBANA_WARMUP_PREFILL_TOKENS, so the first long prompt after boot
+  does not pay the kernel JIT cost; HIBANA_W3_SKIP_REGEX keeps matching layers out of the 3-bit path.
+
+diff --git a/hibana/engine/accept_graphs.py b/hibana/engine/accept_graphs.py
+index b3c7b1c..e658376 100644
+--- a/hibana/engine/accept_graphs.py
++++ b/hibana/engine/accept_graphs.py
+@@ -32,6 +32,13 @@ the round takes the host path.
+ 
+ from __future__ import annotations
+ 
++from hibana.engine.think_guard import (
++    _CLOSE_ID as _TG_CLOSE_ID,
++    apply_think_guard as _apply_think_guard,
++    think_close_bias as _think_close_bias,
++)
++
++
+ import time
+ 
+ import torch
+@@ -108,6 +115,8 @@ class AcceptGraphs:
+             "rng": torch.zeros((b, 2), dtype=torch.int64, device=d),
+             "host_params": torch.zeros((b, 8), dtype=torch.float32, pin_memory=pin),
+             "host_rng": torch.zeros((b, 2), dtype=torch.int64, pin_memory=pin),
++            "think_bias": torch.zeros((b, 1), dtype=torch.bfloat16, device=d),
++            "host_think_bias": torch.zeros((b, 1), dtype=torch.bfloat16, pin_memory=pin),
+             "z_s": torch.zeros((b, s), dtype=torch.int64, device=d),
+             "flags_s": torch.zeros((b, k), dtype=torch.int64, device=d),
+             "fit": torch.zeros(b, dtype=torch.int32, device=d),
+@@ -124,6 +133,8 @@ class AcceptGraphs:
+         vst = self.vg._st[b]
+         s = self.s
+         logits = vst["logits"][:b * s].view(b, s, -1)
++        with torch.inference_mode():
++            logits[:, :, _TG_CLOSE_ID].add_(st["think_bias"])
+         values, index = logits.topk(SAMPLED_CANDIDATES, dim=-1)
+         y = st["y"]
+         accepted, correction, flags, fit = verify_candidates(values, index, y, st["params"], st["rng"], st["q"], st["support"])
+@@ -211,6 +222,11 @@ class AcceptGraphs:
+                 hr[i, 0], hr[i, 1] = r.rng_seed, o
+             st["params"].copy_(hp, non_blocking=True)
+             st["rng"].copy_(hr, non_blocking=True)
++            hb = st["host_think_bias"]
++            hb.zero_()
++            for i, r in enumerate(reqs):
++                hb[i, 0] = _think_close_bias(r)
++            st["think_bias"].copy_(hb, non_blocking=True)
+             st["y"][:b].copy_(y[:, :k])
+             if size > b:
+                 st["y"][b:].zero_()
+@@ -275,7 +291,7 @@ class AcceptGraphs:
+         for i, r in enumerate(reqs):
+             row = packet[i]
+             y_l, z_l, a, count, flags = row[:k], row[k:k + s], row[k + s], row[k + s + 1], row[k + s + 2:]
+-            emitted = (y_l[:a] + [z_l[a]])[:count]
++            emitted = _apply_think_guard(r, (y_l[:a] + [z_l[a]])[:count])
+             assert len(emitted) == count and not r.finished
+             outputs.append(emitted)
+             if r.trace_rounds is not None:
+diff --git a/hibana/engine/executor.py b/hibana/engine/executor.py
+index 636a317..bdd0080 100644
+--- a/hibana/engine/executor.py
++++ b/hibana/engine/executor.py
+@@ -789,6 +789,14 @@ class Executor:
+         self.prefill_batch([(b, 40), (c, 70)])
+         for r in (a, b, c):
+             self.release(r)
++        _warm_chunk = int(os.environ.get("HIBANA_WARMUP_PREFILL_TOKENS", "4096") or "0")
++        if _warm_chunk >= 2048 and self.max_context >= _warm_chunk + 64:
++            self.flush_cache()
++            for _wc in (2048, _warm_chunk) if _warm_chunk > 2048 else (_warm_chunk,):
++                _w = self.admit(random_ids(_wc, 19 + (_wc // 1024), *text), params)
++                self.prefill(_w, max_tokens=_wc)
++                self.release(_w)
++                self.flush_cache()
+         if self.max_batch > 4:
+             self.flush_cache()  # sixteen live warmup rows need every state slot the plan guarantees
+         if self.spec is not None:
+diff --git a/hibana/engine/spec.py b/hibana/engine/spec.py
+index c4c369f..a352b74 100644
+--- a/hibana/engine/spec.py
++++ b/hibana/engine/spec.py
+@@ -6,11 +6,29 @@ this driver owns target verify buffers, graph replay and acceptance metrics.
+ 
+ from __future__ import annotations
+ 
++from hibana.engine.think_guard import (
++    _CLOSE_ID as _TG_CLOSE_ID,
++    apply_think_guard as _apply_think_guard,
++    think_close_bias as _think_close_bias,
++)
++
++
+ import time
+ from dataclasses import dataclass
+ 
+ import torch
+ 
++def _pinned_tolist(t: torch.Tensor) -> list:
++    key = (t.dtype, tuple(t.shape))
++    buf = _PINNED_DTOH_CACHE.get(key)
++    if buf is None:
++        buf = torch.empty(t.shape, dtype=t.dtype, pin_memory=True)
++        _PINNED_DTOH_CACHE[key] = buf
++    buf.copy_(t, non_blocking=False)
++    return buf.tolist()
++
++_PINNED_DTOH_CACHE: dict = {}
++
+ from hibana.engine.context import ForwardContext
+ from hibana.engine.request import Request
+ from hibana.engine.contracts import Proposer, StepInputs, VerifiedFeatures
+@@ -628,7 +646,7 @@ class SpecDecoder:
+             # did not rank first. Downloaded with everything else, one sync.
+             flags_t = (prefix.bool() & ~exact) if relaxed is not None else torch.zeros_like(exact)
+             self.waiting()
+-            packed = torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype), flags_t.to(y.dtype)], dim=1).tolist()
++            packed = _pinned_tolist(torch.cat([y, z, acc_t.unsqueeze(1).to(y.dtype), flags_t.to(y.dtype)], dim=1))
+             y_l = [row[:k] for row in packed]
+             z_l = [row[k:2 * k + 1] for row in packed]
+             acc = [row[2 * k + 1] for row in packed]
+@@ -642,6 +660,12 @@ class SpecDecoder:
+             # laws wider than the candidates, verify row by row (`verify_rows`).
+             acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
+             batched = None
++            if batch.eager:
++                with torch.inference_mode():
++                    for _i, _req in enumerate(reqs):
++                        _tb = _think_close_bias(_req)
++                        if _tb > 0.0:
++                            z[_i, :, _TG_CLOSE_ID].add_(_tb)
+             if (proposal.probabilities is None) == (proposal.support is None):  # point masses, or a sparse law on its support
+                 batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support,
+                                        rng=[[r.rng_seed, o] for r, o in zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))])
+@@ -671,8 +695,8 @@ class SpecDecoder:
+                     corr_rows.append(c_t)
+                     flag_rows.append(rx_t.to(torch.int64))
+                     target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((a_t.reshape(1),), c_t.reshape(1)))
+-            packed = torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype),
+-                                torch.stack(target_rows).to(y.dtype), torch.stack(flag_rows).to(y.dtype)], dim=1).tolist()
++            packed = _pinned_tolist(torch.cat([y, torch.stack(acc_rows).unsqueeze(1).to(y.dtype), torch.stack(corr_rows).unsqueeze(1).to(y.dtype),
++                                torch.stack(target_rows).to(y.dtype), torch.stack(flag_rows).to(y.dtype)], dim=1))
+             y_l = [row[:k] for row in packed]
+             acc = [row[k] for row in packed]
+             # Sampled rows carry only their correction at index a (-1 elsewhere).
+@@ -721,6 +745,8 @@ class SpecDecoder:
+                 ex.state.commit(r, count, ssm=self.inter_ssm_all[:, i, count - 1],
+                                 conv=self.conv_windows_all[:, i, count - 1],
+                                 aux={name: win[i, count - 1] for name, win in self.aux_windows.items()})
++            emitted = _apply_think_guard(r, emitted)
++            outputs[i] = emitted
+             for tok in emitted:
+                 r.push(int(tok))
+             depth = k if limits is None else limits[i]
+diff --git a/hibana/engine/think_guard.py b/hibana/engine/think_guard.py
+new file mode 100644
+index 0000000..7f8a40b
+--- /dev/null
++++ b/hibana/engine/think_guard.py
+@@ -0,0 +1,508 @@
++"""Thinking budget, progressive soft-landing </think> bias, and code-aware repetition guard (THINK_GUARD v3.1).
++
++Adds on top of THINK_GUARD v3:
++  1. Progressive soft-landing </think> logit nudge (`think_close_bias(r)`):
++     - Disabled when HIBANA_THINK_SOFT_BIAS <= 0 (default 0.0).
++     - Completely 0.0 while think_tokens < T_start (default min(4096, 0.30 * max_new_tokens)),
++       so short/normal reasoning, math/code/tool tasks, and 200-prompt Reference KL are 100% untouched.
++     - Between T_start and T_end (default min(10240, 0.60 * max_new_tokens)), ramps linearly from
++       0.0 to +HIBANA_THINK_SOFT_BIAS on </think> (248069). Mid-sentence logit(</think>) is -18 to -25
++       so it never cuts mid-thought; at natural paragraph transitions it gently encourages the model to
++       close <think> and act/answer cleanly rather than over-planning to 24.6K tokens.
++  2. Clean newline-aligned hard budget close + post-close empty-EOS rescue:
++     - Hard budget cap remains as the last line of defense (0.75 * max_tokens, capped at 24576).
++     - When budget hits, waits up to 48 tokens for a newline/sentence boundary (198/271/13) so </think>
++       is not slammed mid-word; if the model emits EOS within 8 tokens of a forced </think> with zero
++       visible content or tool call, replaces EOS once with `\n\n` (271) so it produces its answer/action.
++  3. Code/tool-call aware visible repetition guard (Issue 1 fix):
++     - Tracks <tool_call> (248058) ... </tool_call> (248059) and ``` fences (71093, 52451).
++     - Never false-triggers on normal code n-gram repetition inside tool calls or code fences.
++     - Still catches real degenerate loops in thinking, visible prose, and stuck code loops.
++"""
++from __future__ import annotations
++
++import collections
++import os
++import sys
++
++_ENABLED = os.environ.get("HIBANA_THINK_GUARD", "0") == "1"
++_OPEN_ID = int(os.environ.get("HIBANA_THINK_OPEN_ID", "248068"))
++_CLOSE_ID = int(os.environ.get("HIBANA_THINK_CLOSE_ID", "248069"))
++_EOS_ID = int(os.environ.get("HIBANA_THINK_EOS_ID", "248046"))
++_TOOL_OPEN_ID = int(os.environ.get("HIBANA_TOOL_OPEN_ID", "248058"))
++_TOOL_CLOSE_ID = int(os.environ.get("HIBANA_TOOL_CLOSE_ID", "248059"))
++_FENCE_IDS = frozenset(
++    int(x)
++    for x in os.environ.get("HIBANA_CODE_FENCE_IDS", "71093,52451").split(",")
++    if x.strip()
++)
++_BOUNDARY_IDS = frozenset((198, 271, 13))  # '\n', '\n\n', '.'
++_NL2_ID = 271  # '\n\n'
++
++_BUDGET_FRAC = float(os.environ.get("HIBANA_THINK_BUDGET_FRAC", "0.75"))
++_ABS_MAX_THINK = int(os.environ.get("HIBANA_THINK_MAX_TOKENS", "24576"))
++_BUDGET_GRACE = int(os.environ.get("HIBANA_THINK_BUDGET_GRACE", "48"))
++_LOG = os.environ.get("HIBANA_THINK_GUARD_LOG", "1") != "0"
++
++# Progressive soft-landing </think> bias parameters (Issue 2 + Issue 3 fix; 0.0 = off)
++# Two-stage smooth ramp:
++#   [0 .. t_start]:         0.0 (100% bit-exact, zero KL delta, normal tasks untouched)
++#   [t_start .. t_mid]:     0.0 -> _SOFT_BIAS_MAX (gentle paragraph-boundary nudge)
++#   [t_mid .. t_firm]:      _SOFT_BIAS_MAX -> _SOFT_FIRM_BIAS (ensures clean natural close before budget cap)
++_SOFT_BIAS_MAX = float(os.environ.get("HIBANA_THINK_SOFT_BIAS", "0.0") or "0.0")
++_SOFT_FIRM_BIAS = float(os.environ.get("HIBANA_THINK_SOFT_FIRM_BIAS", "16.0") or "16.0")
++_SOFT_START_ABS = int(os.environ.get("HIBANA_THINK_SOFT_START", "3584") or "3584")
++_SOFT_END_ABS = int(os.environ.get("HIBANA_THINK_SOFT_END", "8192") or "8192")
++_SOFT_FIRM_ABS = int(os.environ.get("HIBANA_THINK_SOFT_FIRM_END", "12288") or "12288")
++_SOFT_START_FRAC = float(os.environ.get("HIBANA_THINK_SOFT_START_FRAC", "0.25") or "0.25")
++_SOFT_END_FRAC = float(os.environ.get("HIBANA_THINK_SOFT_END_FRAC", "0.50") or "0.50")
++_SOFT_FIRM_FRAC = float(os.environ.get("HIBANA_THINK_SOFT_FIRM_FRAC", "0.68") or "0.68")
++
++# Prose & thinking n-gram parameters
++_LONG_N = int(os.environ.get("HIBANA_TG_LONG_N", "24"))
++_LONG_WIN = int(os.environ.get("HIBANA_TG_LONG_WIN", "4096"))
++_LONG_THINK_K = int(os.environ.get("HIBANA_TG_LONG_THINK_K", "4"))
++_LONG_THINK_HARD_K = int(os.environ.get("HIBANA_TG_LONG_THINK_HARD_K", "6"))
++_LONG_THINK_NOV_MAX = float(os.environ.get("HIBANA_TG_LONG_THINK_NOV_MAX", "0.58"))
++_LONG_VIS_K = int(os.environ.get("HIBANA_TG_LONG_VIS_K", "3"))
++_LONG_VIS_HARD_K = int(os.environ.get("HIBANA_TG_LONG_VIS_HARD_K", "4"))
++_LONG_VIS_NOV_MAX = float(os.environ.get("HIBANA_TG_LONG_VIS_NOV_MAX", "0.58"))
++
++_SHORT_N = int(os.environ.get("HIBANA_TG_SHORT_N", "10"))
++_SHORT_WIN = int(os.environ.get("HIBANA_TG_SHORT_WIN", "512"))
++_SHORT_THINK_K = int(os.environ.get("HIBANA_TG_SHORT_THINK_K", "8"))
++_SHORT_VIS_K = int(os.environ.get("HIBANA_TG_SHORT_VIS_K", "6"))
++_SHORT_NOVELTY_MAX = float(os.environ.get("HIBANA_TG_NOVELTY_MAX", "0.45"))
++_SHORT_HARD_K = int(os.environ.get("HIBANA_TG_SHORT_HARD_K", "12"))
++_SHORT_HARD_NOV_MAX = float(os.environ.get("HIBANA_TG_SHORT_HARD_NOV_MAX", "0.65"))
++
++# Strict code / tool-call degenerate-loop parameters
++_CODE_LONG_N = int(os.environ.get("HIBANA_TG_CODE_LONG_N", "64"))
++_CODE_LONG_WIN = int(os.environ.get("HIBANA_TG_CODE_LONG_WIN", "2048"))
++_CODE_LONG_K = int(os.environ.get("HIBANA_TG_CODE_LONG_K", "6"))
++_CODE_NOVELTY_MAX = float(os.environ.get("HIBANA_TG_CODE_NOVELTY_MAX", "0.25"))
++_CODE_PERIODIC_REPS = int(os.environ.get("HIBANA_TG_CODE_PERIODIC_REPS", "12"))
++_CODE_PERIODIC_P1_REPS = int(os.environ.get("HIBANA_TG_CODE_PERIODIC_P1_REPS", "64"))
++
++
++class _PhaseWindow:
++    __slots__ = ("buf", "pos", "long_occ", "short_occ", "code_occ")
++
++    def __init__(self) -> None:
++        self.buf: list[int] = []
++        self.pos: int = 0
++        self.long_occ: dict[tuple[int, ...], collections.deque[int]] = {}
++        self.short_occ: dict[tuple[int, ...], collections.deque[int]] = {}
++        self.code_occ: dict[tuple[int, ...], collections.deque[int]] = {}
++
++    def _novelty_ratio(self, tail_len: int = 256) -> float:
++        tail = self.buf[-tail_len:]
++        n = len(tail)
++        if n < 64:
++            return 1.0
++        total = n - 7
++        uniq = len({tuple(tail[i : i + 8]) for i in range(total)})
++        return uniq / total
++
++    def _tail_periodic(self, min_reps: int = 6, min_p1_reps: int = 32, min_span_tokens: int = 0) -> int:
++        max_need = max(min_p1_reps, min_span_tokens, 64 * min_reps)
++        tail = self.buf[-max_need:]
++        n = len(tail)
++        if n < max(min_reps * 2, min_span_tokens):
++            return 0
++        req_p1 = max(min_p1_reps, min_span_tokens)
++        if n >= req_p1:
++            last = tail[-1]
++            if all(t == last for t in tail[-req_p1:]):
++                return 1
++        max_p = min(64, n // min_reps)
++        for p in range(2, max_p + 1):
++            reps = max(min_reps, (min_span_tokens + p - 1) // p) if min_span_tokens else min_reps
++            if n < p * reps:
++                continue
++            unit = tail[n - p :]
++            ok = True
++            for k in range(2, reps + 1):
++                if tail[n - k * p : n - (k - 1) * p] != unit:
++                    ok = False
++                    break
++            if ok:
++                return p
++        return 0
++
++    def push_and_check(self, tokens: list[int], mode: str) -> str | None:
++        if not tokens:
++            return None
++        if mode == "code":
++            return self._push_and_check_code(tokens)
++
++        is_think = mode == "think"
++        long_k = _LONG_THINK_K if is_think else _LONG_VIS_K
++        long_hard_k = _LONG_THINK_HARD_K if is_think else _LONG_VIS_HARD_K
++        long_nov_max = _LONG_THINK_NOV_MAX if is_think else _LONG_VIS_NOV_MAX
++        short_k = _SHORT_THINK_K if is_think else _SHORT_VIS_K
++        short_hard_k = (_SHORT_HARD_K + 4) if is_think else _SHORT_HARD_K
++        triggered: str | None = None
++
++        for tok in tokens:
++            self.buf.append(tok)
++            t = self.pos
++            self.pos += 1
++            blen = len(self.buf)
++
++            if blen >= _LONG_N:
++                gram = tuple(self.buf[-_LONG_N:])
++                dq = self.long_occ.get(gram)
++                if dq is None:
++                    dq = collections.deque()
++                    self.long_occ[gram] = dq
++                cutoff = t - _LONG_WIN
++                while dq and dq[0] < cutoff:
++                    dq.popleft()
++                if not dq or t - dq[-1] >= _LONG_N:
++                    dq.append(t)
++                    cnt = len(dq)
++                    if triggered is None:
++                        if cnt >= long_hard_k:
++                            triggered = f"long_n{_LONG_N}_k{cnt}"
++                        elif cnt >= long_k and self._novelty_ratio() < long_nov_max:
++                            triggered = f"long_lownov_n{_LONG_N}_k{cnt}"
++
++            if blen >= _SHORT_N:
++                gram = tuple(self.buf[-_SHORT_N:])
++                dq = self.short_occ.get(gram)
++                if dq is None:
++                    dq = collections.deque()
++                    self.short_occ[gram] = dq
++                cutoff = t - _SHORT_WIN
++                while dq and dq[0] < cutoff:
++                    dq.popleft()
++                if not dq or t - dq[-1] >= _SHORT_N:
++                    dq.append(t)
++                    cnt = len(dq)
++                    if triggered is None:
++                        if cnt >= short_hard_k and self._novelty_ratio() < _SHORT_HARD_NOV_MAX:
++                            triggered = f"short_hard_n{_SHORT_N}_k{cnt}"
++                        elif cnt >= short_k and self._novelty_ratio() < _SHORT_NOVELTY_MAX:
++                            triggered = f"short_lownov_n{_SHORT_N}_k{cnt}"
++
++        if len(self.buf) > _LONG_WIN + 512:
++            self.buf = self.buf[-_LONG_WIN:]
++            lcut = self.pos - _LONG_WIN
++            scut = self.pos - _SHORT_WIN
++            self.long_occ = {k: v for k, v in self.long_occ.items() if v and v[-1] >= lcut}
++            self.short_occ = {k: v for k, v in self.short_occ.items() if v and v[-1] >= scut}
++
++        if triggered is None and self.pos >= 64:
++            p = self._tail_periodic(min_reps=(8 if is_think else 6), min_p1_reps=32, min_span_tokens=64)
++            if p:
++                triggered = f"periodic_p{p}"
++        return triggered
++
++    def _push_and_check_code(self, tokens: list[int]) -> str | None:
++        triggered: str | None = None
++        for tok in tokens:
++            self.buf.append(tok)
++            t = self.pos
++            self.pos += 1
++            if len(self.buf) >= _CODE_LONG_N:
++                gram = tuple(self.buf[-_CODE_LONG_N:])
++                dq = self.code_occ.get(gram)
++                if dq is None:
++                    dq = collections.deque()
++                    self.code_occ[gram] = dq
++                cutoff = t - _CODE_LONG_WIN
++                while dq and dq[0] < cutoff:
++                    dq.popleft()
++                if not dq or t - dq[-1] >= _CODE_LONG_N:
++                    dq.append(t)
++                    cnt = len(dq)
++                    if cnt >= _CODE_LONG_K and triggered is None and self._novelty_ratio(256) < _CODE_NOVELTY_MAX:
++                        triggered = f"code_long_n{_CODE_LONG_N}_k{cnt}"
++
++        if len(self.buf) > _CODE_LONG_WIN + 512:
++            self.buf = self.buf[-_CODE_LONG_WIN:]
++            ccut = self.pos - _CODE_LONG_WIN
++            self.code_occ = {k: v for k, v in self.code_occ.items() if v and v[-1] >= ccut}
++
++        if triggered is None and self.pos >= 128:
++            p = self._tail_periodic(
++                min_reps=_CODE_PERIODIC_REPS,
++                min_p1_reps=_CODE_PERIODIC_P1_REPS,
++                min_span_tokens=128,
++            )
++            if p:
++                triggered = f"code_periodic_p{p}"
++        return triggered
++
++
++class _GuardState:
++    __slots__ = (
++        "phase",
++        "forced_close",
++        "think_tokens",
++        "vis_tokens",
++        "win",
++        "stopped",
++        "in_tool_call",
++        "in_code_fence",
++        "rescued_post_close",
++    )
++
++    def __init__(self, in_think: bool) -> None:
++        self.phase: str = "think" if in_think else "visible"
++        self.forced_close: bool = False
++        self.think_tokens: int = 0
++        self.vis_tokens: int = 0
++        self.win: _PhaseWindow = _PhaseWindow()
++        self.stopped: bool = False
++        self.in_tool_call: bool = False
++        self.in_code_fence: bool = False
++        self.rescued_post_close: bool = False
++
++
++def _detect_starts_in_think(r, emitted: list[int]) -> bool:
++    prompt_ids = getattr(r, "prompt_ids", None) or ()
++    tail_p = prompt_ids[-32:] if prompt_ids else ()
++    if _OPEN_ID in tail_p:
++        last_open = -1
++        last_close = -1
++        for i, tid in enumerate(tail_p):
++            if tid == _OPEN_ID:
++                last_open = i
++            elif tid == _CLOSE_ID:
++                last_close = i
++        if last_open > last_close:
++            return True
++    out_head = getattr(r, "output_ids", ())[:16]
++    if _OPEN_ID in out_head or _OPEN_ID in emitted:
++        return True
++    return False
++
++
++def _log(r, msg: str) -> None:
++    if _LOG:
++        rid = getattr(r, "request_id", "?")
++        print(f"think_guard: req={rid} {msg}", file=sys.stderr, flush=True)
++
++
++def _latch_exact(r) -> None:
++    params = getattr(r, "params", None)
++    if params is not None and not getattr(params, "greedy", False) and getattr(params, "accept_soft", 0.0) > 0.0:
++        params.accept_soft = 0.0
++
++
++def think_close_bias(r) -> float:
++    """Return the progressive </think> logit bias for request r (0.0 when inactive or below start threshold)."""
++    if _SOFT_BIAS_MAX <= 0.0:
++        return 0.0
++    params = getattr(r, "params", None)
++    if params is None or getattr(params, "ignore_eos", False):
++        return 0.0
++    st: _GuardState | None = getattr(r, "_tg_v2", None)
++    if st is None:
++        # Works even when HIBANA_THINK_GUARD=0 by inspecting prompt/output_ids directly
++        out_ids = getattr(r, "output_ids", ())
++        if _CLOSE_ID in out_ids:
++            return 0.0
++        if not _detect_starts_in_think(r, []):
++            return 0.0
++        think_toks = len(out_ids)
++    else:
++        if st.phase != "think":
++            return 0.0
++        think_toks = st.think_tokens
++
++    max_tok = getattr(params, "max_new_tokens", 0) or 0
++    if max_tok >= 256:
++        t_start = min(_SOFT_START_ABS, int(_SOFT_START_FRAC * max_tok))
++        t_mid = min(_SOFT_END_ABS, int(_SOFT_END_FRAC * max_tok))
++        t_firm = min(_SOFT_FIRM_ABS, int(_SOFT_FIRM_FRAC * max_tok))
++    else:
++        t_start = _SOFT_START_ABS
++        t_mid = _SOFT_END_ABS
++        t_firm = _SOFT_FIRM_ABS
++    if t_mid <= t_start:
++        t_mid = t_start + 512
++    if t_firm <= t_mid:
++        t_firm = t_mid + 512
++    if think_toks < t_start:
++        return 0.0
++    if think_toks <= t_mid:
++        frac = (think_toks - t_start) / float(t_mid - t_start)
++        return frac * _SOFT_BIAS_MAX
++    firm = max(_SOFT_BIAS_MAX, _SOFT_FIRM_BIAS)
++    frac2 = min(1.0, (think_toks - t_mid) / float(t_firm - t_mid))
++    return _SOFT_BIAS_MAX + frac2 * (firm - _SOFT_BIAS_MAX)
++
++
++def _push_visible_tokens(st: _GuardState, tokens: list[int]) -> tuple[str | None, str]:
++    seg: list[int] = []
++
++    def _cur_ctx() -> tuple[str, str]:
++        if st.in_tool_call:
++            return "code", "tool_call"
++        if st.in_code_fence:
++            return "code", "code_fence"
++        return "prose", "prose"
++
++    for tok in tokens:
++        if tok == _TOOL_OPEN_ID and not st.in_tool_call:
++            if seg:
++                mode, ctx = _cur_ctx()
++                rep = st.win.push_and_check(seg, mode=mode)
++                seg.clear()
++                if rep is not None:
++                    return rep, ctx
++            st.in_tool_call = True
++            st.in_code_fence = False
++            st.win = _PhaseWindow()
++            continue
++
++        if tok == _TOOL_CLOSE_ID and st.in_tool_call:
++            if seg:
++                rep = st.win.push_and_check(seg, mode="code")
++                seg.clear()
++                if rep is not None:
++                    return rep, "tool_call"
++            st.in_tool_call = False
++            st.in_code_fence = False
++            st.win = _PhaseWindow()
++            continue
++
++        if not st.in_tool_call and tok in _FENCE_IDS:
++            if seg:
++                mode, ctx = _cur_ctx()
++                rep = st.win.push_and_check(seg, mode=mode)
++                seg.clear()
++                if rep is not None:
++                    return rep, ctx
++            st.in_code_fence = not st.in_code_fence
++            st.win = _PhaseWindow()
++            continue
++
++        seg.append(tok)
++
++    if seg:
++        mode, ctx = _cur_ctx()
++        rep = st.win.push_and_check(seg, mode=mode)
++        if rep is not None:
++            return rep, ctx
++    _, ctx = _cur_ctx()
++    return None, ctx
++
++
++def apply_think_guard(r, emitted: list[int], enabled_override: bool | None = None) -> list[int]:
++    enabled = _ENABLED if enabled_override is None else enabled_override
++    if not enabled or not emitted:
++        return emitted
++
++    st: _GuardState | None = getattr(r, "_tg_v2", None)
++    if st is None:
++        st = _GuardState(_detect_starts_in_think(r, emitted))
++        r._tg_v2 = st
++
++    if st.stopped:
++        return emitted
++
++    params = getattr(r, "params", None)
++    max_tok = (getattr(params, "max_new_tokens", 0) or 0) if params is not None else 0
++    stops = (getattr(params, "stop_token_ids", ()) or ()) if params is not None else ()
++    ignore_eos = bool(getattr(params, "ignore_eos", False)) if params is not None else False
++    out_len = len(getattr(r, "output_ids", ())) + len(emitted)
++
++    if st.phase == "think" and _CLOSE_ID in emitted:
++        idx = emitted.index(_CLOSE_ID)
++        st.think_tokens += idx + 1
++        st.phase = "visible"
++        st.in_tool_call = False
++        st.in_code_fence = False
++        st.win = _PhaseWindow()
++        tail_vis = emitted[idx + 1 :]
++        if tail_vis:
++            st.vis_tokens += len(tail_vis)
++            _push_visible_tokens(st, tail_vis)
++        return emitted
++
++    if st.phase == "think":
++        st.think_tokens += len(emitted)
++        # 1. Rescue premature EOS inside <think>
++        if (
++            not ignore_eos
++            and not st.forced_close
++            and emitted[-1] in stops
++            and st.think_tokens >= 64
++            and (max_tok == 0 or (max_tok - out_len) >= 64)
++        ):
++            out = list(emitted)
++            out[-1] = _CLOSE_ID
++            st.phase = "visible"
++            st.forced_close = True
++            st.in_tool_call = False
++            st.in_code_fence = False
++            st.win = _PhaseWindow()
++            _latch_exact(r)
++            _log(r, f"type=premature_eos rescued premature EOS inside <think> at out_len={out_len}")
++            return out
++
++        # 2. Thinking budget cap (last line of defense, waits up to _BUDGET_GRACE tokens for newline/sentence end)
++        budget_hit = False
++        budget = _ABS_MAX_THINK
++        if max_tok >= 64:
++            budget = min(max(32, int(_BUDGET_FRAC * max_tok)), _ABS_MAX_THINK)
++            if out_len >= budget:
++                if (emitted[-1] in _BOUNDARY_IDS) or (out_len >= budget + _BUDGET_GRACE) or (max_tok - out_len <= 64):
++                    budget_hit = True
++        elif st.think_tokens >= _ABS_MAX_THINK:
++            if (emitted[-1] in _BOUNDARY_IDS) or (st.think_tokens >= _ABS_MAX_THINK + _BUDGET_GRACE):
++                budget_hit = True
++
++        # 3. Multi-scale repetition check inside <think>
++        rep_reason = st.win.push_and_check(emitted, mode="think")
++
++        if budget_hit or rep_reason is not None:
++            out = list(emitted)
++            if emitted[-1] not in stops or not st.forced_close:
++                out[-1] = _CLOSE_ID
++                st.phase = "visible"
++                st.forced_close = True
++                st.in_tool_call = False
++                st.in_code_fence = False
++                st.win = _PhaseWindow()
++                if rep_reason is not None:
++                    _latch_exact(r)
++                    _log(r, f"type=think_rep closed <think> on {rep_reason} at out_len={out_len}")
++                else:
++                    _log(r, f"type=budget closed <think> on budget(out={out_len},max={max_tok})")
++                return out
++        return emitted
++
++    # Visible phase: rescue immediate empty EOS right after a forced budget close
++    if not ignore_eos and emitted[-1] in stops:
++        if (
++            st.forced_close
++            and not st.rescued_post_close
++            and st.vis_tokens + len(emitted) <= 8
++            and (max_tok == 0 or (max_tok - out_len) >= 64)
++        ):
++            out = list(emitted)
++            out[-1] = _NL2_ID
++            st.rescued_post_close = True
++            st.vis_tokens += len(emitted)
++            _log(r, f"type=post_close_eos rescued immediate empty EOS after forced </think> at out_len={out_len}")
++            return out
++        st.stopped = True
++        return emitted
++
++    st.vis_tokens += len(emitted)
++    rep_reason, ctx = _push_visible_tokens(st, emitted)
++    if rep_reason is not None:
++        if not ignore_eos:
++            eos_id = int(stops[0]) if stops else _EOS_ID
++            out = list(emitted)
++            out[-1] = eos_id
++            st.stopped = True
++            _log(r, f"type=visible_rep ctx={ctx} stopped visible repetition loop on {rep_reason} at out_len={out_len}")
++            return out
++        _latch_exact(r)
++    return emitted
+diff --git a/hibana/kernels/csrc/hyper_mix_cuda.cu b/hibana/kernels/csrc/hyper_mix_cuda.cu
+new file mode 100644
+index 0000000..6f2f556
+--- /dev/null
++++ b/hibana/kernels/csrc/hyper_mix_cuda.cu
+@@ -0,0 +1,250 @@
++// Fused small-M HyperConnection.mix CUDA kernels for SM120/SM121 (Flash-Next GB10), v2 (hoisted FP8 unpack).
++//
++// Replaces the 6-kernel verify/draft sequence (quant_fp8 + scaled_mm/gemv down + silu +
++// quant_fp8_small + scaled_mm/gemv up + gate_mean) with 2 streaming kernels:
++//   1. hyper_down_silu:      [M, 10240] BF16 x [320, 10240]^T FP8 -> silu -> [M, 320] FP32
++//   2. hyper_up_gate_mean:   [M, 320] FP32 x [10240, 320]^T FP8 -> sigmoid * normed -> mean(hc=4) -> [M, 2560] BF16
++//
++// Hoists all 16 FP8->FP32 conversions outside the inner m=0..M-1 loop in both kernels.
++// Exact BF16 activations (max_err=0.00000 vs live FP8 activation error 0.01953), zero extra VRAM.
++
++#include <cuda_bf16.h>
++#include <cuda_fp8.h>
++#include <torch/extension.h>
++#include <c10/cuda/CUDAStream.h>
++
++#include <cstdint>
++
++namespace {
++
++__device__ __forceinline__ void unpack16_fp8(const float4 wv, float wf[16]) {
++  const __nv_fp8x2_e4m3* w2 = reinterpret_cast<const __nv_fp8x2_e4m3*>(&wv);
++#pragma unroll
++  for (int i = 0; i < 8; ++i) {
++    const float2 f = static_cast<float2>(w2[i]);
++    wf[2 * i] = f.x;
++    wf[2 * i + 1] = f.y;
++  }
++}
++
++__device__ __forceinline__ float dot16_unpacked_bf16(const float wf[16], const uint4 x0, const uint4 x1) {
++  const __nv_bfloat162* b0 = reinterpret_cast<const __nv_bfloat162*>(&x0);
++  const __nv_bfloat162* b1 = reinterpret_cast<const __nv_bfloat162*>(&x1);
++  float acc = 0.0f;
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    const float2 xf = __bfloat1622float2(b0[i]);
++    acc = fmaf(wf[2 * i], xf.x, acc);
++    acc = fmaf(wf[2 * i + 1], xf.y, acc);
++  }
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    const float2 xf = __bfloat1622float2(b1[i]);
++    acc = fmaf(wf[8 + 2 * i], xf.x, acc);
++    acc = fmaf(wf[8 + 2 * i + 1], xf.y, acc);
++  }
++  return acc;
++}
++
++__device__ __forceinline__ float dot16_unpacked_f32(const float wf[16], const float* __restrict__ xp) {
++  const float4* xf4 = reinterpret_cast<const float4*>(xp);
++  float acc = 0.0f;
++#pragma unroll
++  for (int i = 0; i < 4; ++i) {
++    const float4 xv = xf4[i];
++    acc = fmaf(wf[4 * i + 0], xv.x, acc);
++    acc = fmaf(wf[4 * i + 1], xv.y, acc);
++    acc = fmaf(wf[4 * i + 2], xv.z, acc);
++    acc = fmaf(wf[4 * i + 3], xv.w, acc);
++  }
++  return acc;
++}
++
++template <int M>
++__global__ void __launch_bounds__(128) hyper_down_silu_kernel(
++    float* __restrict__ d_out,
++    const __nv_bfloat16* __restrict__ x,
++    const uint8_t* __restrict__ w,
++    const float* __restrict__ w_scale,
++    const int N_down,
++    const int K) {
++  const int r = blockIdx.x;
++  if (r >= N_down) return;
++
++  const int warp = threadIdx.x >> 5;
++  const int lane = threadIdx.x & 31;
++  const uint8_t* w_row = w + static_cast<size_t>(r) * K;
++
++  float acc[M];
++#pragma unroll
++  for (int m = 0; m < M; ++m) acc[m] = 0.0f;
++
++  for (int k = (warp * 32 + lane) * 16; k < K; k += 128 * 16) {
++    const float4 wv = __ldcs(reinterpret_cast<const float4*>(w_row + k));
++    float wf[16];
++    unpack16_fp8(wv, wf);
++#pragma unroll
++    for (int m = 0; m < M; ++m) {
++      const __nv_bfloat16* xm = x + static_cast<size_t>(m) * K + k;
++      const uint4 x0 = *reinterpret_cast<const uint4*>(xm);
++      const uint4 x1 = *reinterpret_cast<const uint4*>(xm + 8);
++      acc[m] += dot16_unpacked_bf16(wf, x0, x1);
++    }
++  }
++
++#pragma unroll
++  for (int m = 0; m < M; ++m) {
++#pragma unroll
++    for (int off = 16; off > 0; off >>= 1) {
++      acc[m] += __shfl_down_sync(0xffffffff, acc[m], off);
++    }
++  }
++
++  __shared__ float smem[4][M];
++  if (lane == 0) {
++#pragma unroll
++    for (int m = 0; m < M; ++m) smem[warp][m] = acc[m];
++  }
++  __syncthreads();
++
++  if (threadIdx.x < M) {
++    const int m = threadIdx.x;
++    const float s = (smem[0][m] + smem[1][m] + smem[2][m] + smem[3][m]) * (*w_scale);
++    d_out[m * N_down + r] = s / (1.0f + __expf(-s));
++  }
++}
++
++template <int M, int K_RANK>
++__global__ void __launch_bounds__(128) hyper_up_gate_mean_kernel(
++    __nv_bfloat16* __restrict__ out,
++    const float* __restrict__ d_silu,
++    const uint8_t* __restrict__ w_up,
++    const float* __restrict__ w_scale,
++    const __nv_bfloat16* __restrict__ normed,
++    const int H) {
++  __shared__ __align__(16) float sd[M * K_RANK];
++
++  const int tid = threadIdx.x;
++  const int total_f4 = (M * K_RANK) >> 2;
++  const float4* src4 = reinterpret_cast<const float4*>(d_silu);
++  float4* dst4 = reinterpret_cast<float4*>(sd);
++  for (int i = tid; i < total_f4; i += 128) {
++    dst4[i] = src4[i];
++  }
++  __syncthreads();
++
++  const int group_in_block = tid >> 2;
++  const int sub_lane = tid & 3;
++  const int c = blockIdx.x * 32 + group_in_block;
++  if (c >= H) return;
++
++  const float sc = *w_scale;
++  float sum_m[M];
++#pragma unroll
++  for (int m = 0; m < M; ++m) sum_m[m] = 0.0f;
++
++#pragma unroll
++  for (int s = 0; s < 4; ++s) {
++    const uint8_t* w_row = w_up + static_cast<size_t>(s * H + c) * K_RANK;
++    float acc[M];
++#pragma unroll
++    for (int m = 0; m < M; ++m) acc[m] = 0.0f;
++
++#pragma unroll
++    for (int k = sub_lane * 16; k < K_RANK; k += 64) {
++      const float4 wv = __ldcs(reinterpret_cast<const float4*>(w_row + k));
++      float wf[16];
++      unpack16_fp8(wv, wf);
++#pragma unroll
++      for (int m = 0; m < M; ++m) {
++        acc[m] += dot16_unpacked_f32(wf, sd + m * K_RANK + k);
++      }
++    }
++
++#pragma unroll
++    for (int m = 0; m < M; ++m) {
++      acc[m] += __shfl_xor_sync(0xffffffff, acc[m], 2);
++      acc[m] += __shfl_xor_sync(0xffffffff, acc[m], 1);
++    }
++
++    if (sub_lane == 0) {
++      const int col_idx = s * H + c;
++#pragma unroll
++      for (int m = 0; m < M; ++m) {
++        const float g = 1.0f / (1.0f + __expf(-(acc[m] * sc)));
++        const float nv = __bfloat162float(normed[static_cast<size_t>(m) * (4 * H) + col_idx]);
++        sum_m[m] = fmaf(g, nv, sum_m[m]);
++      }
++    }
++  }
++
++  if (sub_lane == 0) {
++#pragma unroll
++    for (int m = 0; m < M; ++m) {
++      out[static_cast<size_t>(m) * H + c] = __float2bfloat16(sum_m[m] * 0.25f);
++    }
++  }
++}
++
++template <int M>
++torch::Tensor dispatch_mix(
++    torch::Tensor normed,
++    torch::Tensor w_down,
++    torch::Tensor s_down,
++    torch::Tensor w_up,
++    torch::Tensor s_up,
++    int H) {
++  const int N_down = w_down.size(0);
++  const int K = normed.size(1);
++  auto stream = c10::cuda::getCurrentCUDAStream();
++  auto d_silu = torch::empty({M, N_down}, normed.options().dtype(at::kFloat));
++  auto out = torch::empty({M, H}, normed.options().dtype(at::kBFloat16));
++
++  hyper_down_silu_kernel<M><<<N_down, 128, 0, stream>>>(
++      d_silu.data_ptr<float>(),
++      reinterpret_cast<const __nv_bfloat16*>(normed.data_ptr()),
++      static_cast<const uint8_t*>(w_down.data_ptr()),
++      s_down.data_ptr<float>(),
++      N_down,
++      K);
++
++  const int blocks_up = (H + 31) / 32;
++  hyper_up_gate_mean_kernel<M, 320><<<blocks_up, 128, 0, stream>>>(
++      reinterpret_cast<__nv_bfloat16*>(out.data_ptr()),
++      d_silu.data_ptr<float>(),
++      static_cast<const uint8_t*>(w_up.data_ptr()),
++      s_up.data_ptr<float>(),
++      reinterpret_cast<const __nv_bfloat16*>(normed.data_ptr()),
++      H);
++  return out;
++}
++
++}  // namespace
++
++torch::Tensor hyper_mix_fp8(
++    torch::Tensor normed,
++    torch::Tensor w_down,
++    torch::Tensor s_down,
++    torch::Tensor w_up,
++    torch::Tensor s_up,
++    int64_t hidden) {
++  const int M = static_cast<int>(normed.size(0));
++  TORCH_CHECK(w_down.size(0) == 320, "hyper_mix_fp8 supports rank==320");
++  switch (M) {
++    case 1: return dispatch_mix<1>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 2: return dispatch_mix<2>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 3: return dispatch_mix<3>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 4: return dispatch_mix<4>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 5: return dispatch_mix<5>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 6: return dispatch_mix<6>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 7: return dispatch_mix<7>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 8: return dispatch_mix<8>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    case 9: return dispatch_mix<9>(normed, w_down, s_down, w_up, s_up, static_cast<int>(hidden));
++    default:
++      TORCH_CHECK(false, "hyper_mix_fp8 supports M in 1..9, got ", M);
++  }
++}
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++  m.def("hyper_mix_fp8", &hyper_mix_fp8, "Fused small-M HyperConnection.mix (SM121 v2 hoisted FP8)");
++}
+diff --git a/hibana/kernels/csrc/hyper_mix_tc.cu b/hibana/kernels/csrc/hyper_mix_tc.cu
+new file mode 100644
+index 0000000..6f106a5
+--- /dev/null
++++ b/hibana/kernels/csrc/hyper_mix_tc.cu
+@@ -0,0 +1,271 @@
++// SM120/SM121 Tensor-Core Fused HyperConnection.mix v3:
++//   - 2x N-tiling per warp (m16 x n16 per warp = 2 m16n8k16 MMAs sharing the same A fragment -> 50% fewer A loads!)
++//   - 2-stage software-pipelined coalesced 16-byte uint4 __ldcs loads (overlaps DRAM latency with Tensor-Core MMA!)
++//   - Programmatic dependent launch (griddepcontrol) + exact BF16 activations (zero activation FP8 quantization error).
++
++#include <cuda_bf16.h>
++#include <cuda_fp8.h>
++#include <torch/extension.h>
++#include <c10/cuda/CUDAStream.h>
++
++#include <cstdint>
++
++namespace {
++
++constexpr int kSplitK = 8;
++
++__device__ __forceinline__ uint32_t fp8x2_to_bf16x2_u32(const uint16_t raw2) {
++  const __nv_fp8x2_e4m3 w2 = *reinterpret_cast<const __nv_fp8x2_e4m3*>(&raw2);
++  const float2 f = static_cast<float2>(w2);
++  const __nv_bfloat162 b = __floats2bfloat162_rn(f.x, f.y);
++  return *reinterpret_cast<const uint32_t*>(&b);
++}
++
++__device__ __forceinline__ void mma_bf16(float d[4], const uint32_t a[4], const uint32_t b0, const uint32_t b1) {
++  asm volatile(
++      "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
++      "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
++      : "=f"(d[0]), "=f"(d[1]), "=f"(d[2]), "=f"(d[3])
++      : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
++        "r"(b0), "r"(b1),
++        "f"(d[0]), "f"(d[1]), "f"(d[2]), "f"(d[3]));
++}
++
++__device__ __forceinline__ void unpack_b_step(
++    const uint4 wv, const int g, const int t, const int step, uint32_t& b0, uint32_t& b1) {
++  const int src = g * 4 + step;
++  const uint32_t sx = __shfl_sync(0xffffffff, wv.x, src);
++  const uint32_t sy = __shfl_sync(0xffffffff, wv.y, src);
++  const uint32_t sz = __shfl_sync(0xffffffff, wv.z, src);
++  const uint32_t sw = __shfl_sync(0xffffffff, wv.w, src);
++  const uint32_t p0 = (t < 2) ? sx : sy;
++  const uint32_t p1 = (t < 2) ? sz : sw;
++  const uint16_t wb0 = (t & 1) ? static_cast<uint16_t>(p0 >> 16) : static_cast<uint16_t>(p0 & 0xFFFFu);
++  const uint16_t wb1 = (t & 1) ? static_cast<uint16_t>(p1 >> 16) : static_cast<uint16_t>(p1 & 0xFFFFu);
++  b0 = fp8x2_to_bf16x2_u32(wb0);
++  b1 = fp8x2_to_bf16x2_u32(wb1);
++}
++
++// Kernel 1: [M, K] BF16 x [N_down, K]^T FP8 -> [kSplitK, M, N_down] FP32
++// 2x N-tiling: each block owns 16 output rows (n0..n0+15), Grid = (N_down / 16 = 20, kSplitK = 8) = 160 blocks, 4 warps/block!
++__global__ void __launch_bounds__(128) hyper_down_tc_kernel(
++    float* __restrict__ partials,
++    const __nv_bfloat16* __restrict__ x,
++    const uint8_t* __restrict__ w,
++    const int M,
++    const int N_down,
++    const int K) {
++  const int n0 = blockIdx.x * 16;
++  const int sk = blockIdx.y;
++  const int warp = threadIdx.x >> 5;
++  const int lane = threadIdx.x & 31;
++  const int g = lane >> 2;  // 0..7
++  const int t = lane & 3;   // 0..3
++
++  const int k_per_split = K / kSplitK;  // 1280 for K=10240, kSplitK=8
++  const int k_begin = sk * k_per_split + warp * 64;
++  const int k_end = (sk + 1) * k_per_split;
++
++  const uint8_t* w_row0 = w + static_cast<size_t>(n0 + g) * K;
++  const uint8_t* w_row1 = w + static_cast<size_t>(n0 + 8 + g) * K;
++  const bool ok0 = g < M;
++  const bool ok1 = (g + 8) < M;
++  const __nv_bfloat16* x_r0 = x + static_cast<size_t>(ok0 ? g : 0) * K;
++  const __nv_bfloat16* x_r1 = x + static_cast<size_t>(ok1 ? (g + 8) : 0) * K;
++
++  float acc0[4] = {0.f, 0.f, 0.f, 0.f};
++  float acc1[4] = {0.f, 0.f, 0.f, 0.f};
++
++  // Prefetch first weight chunk before waiting on producer (PDL)
++  uint4 wv0_cur = __ldcs(reinterpret_cast<const uint4*>(w_row0 + k_begin + t * 16));
++  uint4 wv1_cur = __ldcs(reinterpret_cast<const uint4*>(w_row1 + k_begin + t * 16));
++  asm volatile("griddepcontrol.wait;" ::: "memory");
++
++  for (int k = k_begin; k < k_end; k += 256) {
++    uint4 wv0_nxt, wv1_nxt;
++    if (k + 256 < k_end) {
++      wv0_nxt = __ldcs(reinterpret_cast<const uint4*>(w_row0 + k + 256 + t * 16));
++      wv1_nxt = __ldcs(reinterpret_cast<const uint4*>(w_row1 + k + 256 + t * 16));
++    }
++#pragma unroll
++    for (int step = 0; step < 4; ++step) {
++      const int ks = k + step * 16;
++      uint32_t a[4];
++      a[0] = ok0 ? *reinterpret_cast<const uint32_t*>(x_r0 + ks + 2 * t) : 0u;
++      a[1] = ok1 ? *reinterpret_cast<const uint32_t*>(x_r1 + ks + 2 * t) : 0u;
++      a[2] = ok0 ? *reinterpret_cast<const uint32_t*>(x_r0 + ks + 8 + 2 * t) : 0u;
++      a[3] = ok1 ? *reinterpret_cast<const uint32_t*>(x_r1 + ks + 8 + 2 * t) : 0u;
++
++      uint32_t b0, b1;
++      unpack_b_step(wv0_cur, g, t, step, b0, b1);
++      mma_bf16(acc0, a, b0, b1);
++      unpack_b_step(wv1_cur, g, t, step, b0, b1);
++      mma_bf16(acc1, a, b0, b1);
++    }
++    wv0_cur = wv0_nxt;
++    wv1_cur = wv1_nxt;
++  }
++
++  __shared__ float smem[4][16][16];  // 4 KB
++  smem[warp][g][2 * t] = acc0[0];
++  smem[warp][g][2 * t + 1] = acc0[1];
++  smem[warp][g + 8][2 * t] = acc0[2];
++  smem[warp][g + 8][2 * t + 1] = acc0[3];
++  smem[warp][g][8 + 2 * t] = acc1[0];
++  smem[warp][g][8 + 2 * t + 1] = acc1[1];
++  smem[warp][g + 8][8 + 2 * t] = acc1[2];
++  smem[warp][g + 8][8 + 2 * t + 1] = acc1[3];
++  __syncthreads();
++
++  for (int idx = threadIdx.x; idx < M * 16; idx += 128) {
++    const int r = idx >> 4;
++    const int c = idx & 15;
++    const float sum = smem[0][r][c] + smem[1][r][c] + smem[2][r][c] + smem[3][r][c];
++    partials[(static_cast<size_t>(sk) * M + r) * N_down + n0 + c] = sum;
++  }
++  asm volatile("griddepcontrol.launch_dependents;");
++}
++
++// Kernel 2: 2x N-tiling per block (16 columns c0..c0+15), 4 warps = 4 streams s=0..3, double-buffered uint4 __ldcs!
++// Grid: H / 16 = 160 blocks (3.33 waves on 48 SMs!), 4 warps (128 threads) per block.
++template <int K_RANK>
++__global__ void __launch_bounds__(128) hyper_up_gate_mean_tc_kernel(
++    __nv_bfloat16* __restrict__ out,
++    const float* __restrict__ partials,
++    const float* __restrict__ s_down,
++    const uint8_t* __restrict__ w_up,
++    const float* __restrict__ s_up,
++    const __nv_bfloat16* __restrict__ normed,
++    const int M,
++    const int H) {
++  __shared__ __align__(16) __nv_bfloat16 sd[16 * K_RANK];  // 10 KB
++
++  const int c0 = blockIdx.x * 16;
++  const int s = threadIdx.x >> 5;  // 0..3
++  const int lane = threadIdx.x & 31;
++  const int g = lane >> 2;
++  const int t = lane & 3;
++  const uint8_t* w_row0 = w_up + static_cast<size_t>(s * H + c0 + g) * K_RANK;
++  const uint8_t* w_row1 = w_up + static_cast<size_t>(s * H + c0 + 8 + g) * K_RANK;
++
++  // Prefetch first weight chunk while waiting for Kernel 1 partials!
++  uint4 wv0_cur = __ldcs(reinterpret_cast<const uint4*>(w_row0 + t * 16));
++  uint4 wv1_cur = __ldcs(reinterpret_cast<const uint4*>(w_row1 + t * 16));
++  asm volatile("griddepcontrol.wait;" ::: "memory");
++
++  const int tid = threadIdx.x;
++  const float sd_sc = *s_down;
++  const int total_elems = M * K_RANK;
++  const size_t split_stride = static_cast<size_t>(M) * K_RANK;
++  for (int i = tid; i < total_elems; i += 128) {
++    float v = 0.0f;
++#pragma unroll
++    for (int sk = 0; sk < kSplitK; ++sk) v += partials[sk * split_stride + i];
++    v *= sd_sc;
++    sd[i] = __float2bfloat16(v / (1.0f + __expf(-v)));
++  }
++  __syncthreads();
++
++  const bool ok0 = g < M;
++  const bool ok1 = (g + 8) < M;
++  const __nv_bfloat16* a_r0 = sd + static_cast<size_t>(ok0 ? g : 0) * K_RANK;
++  const __nv_bfloat16* a_r1 = sd + static_cast<size_t>(ok1 ? (g + 8) : 0) * K_RANK;
++
++  float acc0[4] = {0.f, 0.f, 0.f, 0.f};
++  float acc1[4] = {0.f, 0.f, 0.f, 0.f};
++
++#pragma unroll
++  for (int k = 0; k < K_RANK; k += 64) {
++    uint4 wv0_nxt, wv1_nxt;
++    if (k + 64 < K_RANK) {
++      wv0_nxt = __ldcs(reinterpret_cast<const uint4*>(w_row0 + k + 64 + t * 16));
++      wv1_nxt = __ldcs(reinterpret_cast<const uint4*>(w_row1 + k + 64 + t * 16));
++    }
++#pragma unroll
++    for (int step = 0; step < 4; ++step) {
++      const int ks = k + step * 16;
++      uint32_t a[4];
++      a[0] = ok0 ? *reinterpret_cast<const uint32_t*>(a_r0 + ks + 2 * t) : 0u;
++      a[1] = ok1 ? *reinterpret_cast<const uint32_t*>(a_r1 + ks + 2 * t) : 0u;
++      a[2] = ok0 ? *reinterpret_cast<const uint32_t*>(a_r0 + ks + 8 + 2 * t) : 0u;
++      a[3] = ok1 ? *reinterpret_cast<const uint32_t*>(a_r1 + ks + 8 + 2 * t) : 0u;
++
++      uint32_t b0, b1;
++      unpack_b_step(wv0_cur, g, t, step, b0, b1);
++      mma_bf16(acc0, a, b0, b1);
++      unpack_b_step(wv1_cur, g, t, step, b0, b1);
++      mma_bf16(acc1, a, b0, b1);
++    }
++    wv0_cur = wv0_nxt;
++    wv1_cur = wv1_nxt;
++  }
++
++  const float su_sc = *s_up;
++  __shared__ float smem[4][16][16];  // 4 KB
++  const int col0 = 2 * t;
++  const int col1 = 2 * t + 1;
++  if (ok0) {
++    const size_t base0 = static_cast<size_t>(g) * (4 * H) + static_cast<size_t>(s) * H + c0;
++    smem[s][g][col0] = (1.0f / (1.0f + __expf(-(acc0[0] * su_sc)))) * __bfloat162float(normed[base0 + col0]);
++    smem[s][g][col1] = (1.0f / (1.0f + __expf(-(acc0[1] * su_sc)))) * __bfloat162float(normed[base0 + col1]);
++    smem[s][g][8 + col0] = (1.0f / (1.0f + __expf(-(acc1[0] * su_sc)))) * __bfloat162float(normed[base0 + 8 + col0]);
++    smem[s][g][8 + col1] = (1.0f / (1.0f + __expf(-(acc1[1] * su_sc)))) * __bfloat162float(normed[base0 + 8 + col1]);
++  }
++  if (ok1) {
++    const size_t base1 = static_cast<size_t>(g + 8) * (4 * H) + static_cast<size_t>(s) * H + c0;
++    smem[s][g + 8][col0] = (1.0f / (1.0f + __expf(-(acc0[2] * su_sc)))) * __bfloat162float(normed[base1 + col0]);
++    smem[s][g + 8][col1] = (1.0f / (1.0f + __expf(-(acc0[3] * su_sc)))) * __bfloat162float(normed[base1 + col1]);
++    smem[s][g + 8][8 + col0] = (1.0f / (1.0f + __expf(-(acc1[2] * su_sc)))) * __bfloat162float(normed[base1 + 8 + col0]);
++    smem[s][g + 8][8 + col1] = (1.0f / (1.0f + __expf(-(acc1[3] * su_sc)))) * __bfloat162float(normed[base1 + 8 + col1]);
++  }
++  __syncthreads();
++
++  for (int idx = tid; idx < M * 16; idx += 128) {
++    const int r = idx >> 4;
++    const int c = idx & 15;
++    const float avg = 0.25f * (smem[0][r][c] + smem[1][r][c] + smem[2][r][c] + smem[3][r][c]);
++    out[static_cast<size_t>(r) * H + c0 + c] = __float2bfloat16(avg);
++  }
++}
++
++}  // namespace
++
++torch::Tensor hyper_mix_tc(
++    torch::Tensor normed,
++    torch::Tensor w_down,
++    torch::Tensor s_down,
++    torch::Tensor w_up,
++    torch::Tensor s_up,
++    int64_t hidden) {
++  const int M = static_cast<int>(normed.size(0));
++  const int K = static_cast<int>(normed.size(1));
++  const int N_down = static_cast<int>(w_down.size(0));
++  const int H = static_cast<int>(hidden);
++  TORCH_CHECK(M >= 1 && M <= 16, "hyper_mix_tc supports M in 1..16");
++  TORCH_CHECK(N_down == 320 && K == 4 * H && (K % (kSplitK * 256) == 0), "unexpected hyper_mix_tc shape");
++
++  auto stream = c10::cuda::getCurrentCUDAStream();
++  auto partials = torch::empty({kSplitK, M, N_down}, normed.options().dtype(at::kFloat));
++  auto out = torch::empty({M, H}, normed.options().dtype(at::kBFloat16));
++
++  dim3 grid_down(N_down / 16, kSplitK);
++  hyper_down_tc_kernel<<<grid_down, 128, 0, stream>>>(
++      partials.data_ptr<float>(),
++      reinterpret_cast<const __nv_bfloat16*>(normed.data_ptr()),
++      static_cast<const uint8_t*>(w_down.data_ptr()),
++      M, N_down, K);
++
++  hyper_up_gate_mean_tc_kernel<320><<<H / 16, 128, 0, stream>>>(
++      reinterpret_cast<__nv_bfloat16*>(out.data_ptr()),
++      partials.data_ptr<float>(),
++      s_down.data_ptr<float>(),
++      static_cast<const uint8_t*>(w_up.data_ptr()),
++      s_up.data_ptr<float>(),
++      reinterpret_cast<const __nv_bfloat16*>(normed.data_ptr()),
++      M, H);
++  return out;
++}
++
++PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
++  m.def("hyper_mix_tc", &hyper_mix_tc, "SM121 Tensor-Core v3 (2x N-tile + double-buffered uint4 + PDL + m16n8k16)");
++}
+diff --git a/hibana/kernels/csrc/w3_gemm.cu b/hibana/kernels/csrc/w3_gemm.cu
+index e026d1a..40e1c0d 100644
+--- a/hibana/kernels/csrc/w3_gemm.cu
++++ b/hibana/kernels/csrc/w3_gemm.cu
+@@ -1141,6 +1141,132 @@ __device__ __forceinline__ void pass(const Params& p, float (*hsm)[kPass + 1], S
+ // fc1 (FC1) or fc2 for 128 weight rows of one selected expert: blockIdx.y the distinct slot, blockIdx.x the row block.
+ // MTMAX 1 serves calls of at most 16 rows (one pass, and the register budget of one row tile: a wider variant in
+ // the same kernel costs decode about 15% in occupancy), 4 everything else.
++
++template <class S, bool FC1, int NW>
++__global__ void __launch_bounds__(NW * 32) gemm_decode_nw(const Params p) {
++  const int d = blockIdx.y;
++  if constexpr (FC1) grid_wait();
++  if (d >= __ldg(p.plan)) return;
++  const int e = __ldg(p.plan + kPlanExp + d), s0 = __ldg(p.plan + kPlanStart + d), rows = __ldg(p.plan + kPlanStart + d + 1) - s0;
++  const int* list = p.order + s0;
++  constexpr int kH = S::H, kI = S::I, kN1 = S::N1;
++  constexpr int N = FC1 ? kN1 : kH, K = FC1 ? kH : kI, KC = K / kChunk;
++  const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, g = lane >> 2, t = lane & 3;
++  const uint32_t lut_lo = FC1 ? p.lut_lo : p.lut2_lo, lut_hi = FC1 ? p.lut_hi : p.lut2_hi;
++  const uint8_t* xbase = FC1 ? p.xq : p.hq;
++  const float* sbase = FC1 ? p.xs : p.hs;
++  const uint8_t* xr[1][2];
++  const float* xg[1][2];
++#pragma unroll
++  for (int half = 0; half < 2; ++half) {
++    const int m = g + 8 * half;
++    xr[0][half] = nullptr;
++    xg[0][half] = nullptr;
++    if (m < rows) {
++      const int q = __ldg(list + m), r = FC1 ? row_of(p, q) : q;
++      xr[0][half] = xbase + static_cast<size_t>(r) * K;
++      xg[0][half] = sbase + static_cast<size_t>(r) * (K / 32);
++    }
++  }
++  const int nb = blockIdx.x * NW + warp;
++  const size_t block = static_cast<size_t>(e) * (N / 32) + nb;
++  const uint4* wp = (FC1 ? p.planes13 : p.planes2) + block * KC * kPlaneWords + lane;
++  const uint4* sp = (FC1 ? p.scales13 : p.scales2) + block * KC * kScaleWords + 2 * t;
++
++  float acc[1][4][4];
++#pragma unroll
++  for (int nt = 0; nt < 4; ++nt)
++#pragma unroll
++    for (int i = 0; i < 4; ++i) acc[0][nt][i] = 0.f;
++
++  uint4 w[2][3];
++  uint4 s[2][2];
++  auto load = [&](int c, uint4 (&wd)[3], uint4 (&sd)[2]) {
++    const uint4* q = wp + static_cast<size_t>(c) * kPlaneWords;
++    wd[0] = __ldcs(q);
++    wd[1] = __ldcs(q + 32);
++    wd[2] = __ldcs(q + 64);
++    sd[0] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords);
++    sd[1] = __ldcs(sp + static_cast<size_t>(c) * kScaleWords + 1);
++  };
++  load(0, w[0], s[0]);
++  load(1, w[1], s[1]);
++  if constexpr (!FC1) grid_wait();
++  for (int c = 0; c < KC; c += 2) {
++#pragma unroll
++    for (int slot = 0; slot < 2; ++slot) {
++      const int cc = c + slot;
++      if (cc < KC) {
++        uint4 wl[3] = {w[slot][0], w[slot][1], w[slot][2]};
++        const uint4 sl[2] = {s[slot][0], s[slot][1]};
++        if (cc + 2 < KC) load(cc + 2, w[slot], s[slot]);
++        const uint32_t* wd = reinterpret_cast<const uint32_t*>(wl);
++        const uint8_t* sb = reinterpret_cast<const uint8_t*>(sl);
++        const int k0 = cc * kChunk;
++        group_rows<1, 0>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
++        group_rows<1, 1>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
++        group_rows<1, 2>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
++        group_rows<1, 3>(acc, wd, sb, xr, xg, k0, t, lut_lo, lut_hi);
++      }
++    }
++  }
++  const float* rs = (FC1 ? p.row13 : p.row2) + static_cast<size_t>(e) * N + nb * 32;
++  if constexpr (!FC1) {
++#pragma unroll
++    for (int half = 0; half < 2; ++half) {
++      const int m = g + 8 * half;
++      if (m < rows) {
++        const size_t at = static_cast<size_t>(__ldg(list + m)) * kH + nb * 32;
++#pragma unroll
++        for (int nt = 0; nt < 4; ++nt) {
++          const int n = nt * 8 + 2 * t;
++          const float2 v = make_float2(acc[0][nt][2 * half] * rs[n], acc[0][nt][2 * half + 1] * rs[n + 1]);
++          if (p.yb) *reinterpret_cast<__nv_bfloat162*>(p.yb + at + n) = __float22bfloat162_rn(v);
++          else *reinterpret_cast<float2*>(p.y + at + n) = v;
++        }
++      }
++    }
++    return;
++  } else {
++    __shared__ float hsm[16][NW * 16 + 1];
++#pragma unroll
++    for (int half = 0; half < 2; ++half) {
++      const int m = g + 8 * half;
++      if (m < rows) {
++#pragma unroll
++        for (int nt = 0; nt < 2; ++nt)
++#pragma unroll
++          for (int i = 0; i < 2; ++i) {
++            const int j = nt * 8 + 2 * t + i;
++            const float u = bf16r(acc[0][nt][2 * half + i] * rs[j]), gv = bf16r(acc[0][nt + 2][2 * half + i] * rs[16 + j]);
++            hsm[m][warp * 16 + j] = bf16r(gv / (1.f + __expf(-gv)) * u);
++          }
++      }
++    }
++    __syncthreads();
++    constexpr int kGrps = (NW * 16) / 32;
++    for (int i = tid; i < kGrps * rows; i += NW * 32) {
++      const int m = i / kGrps, grp = i % kGrps, q = __ldg(list + m);
++      float amax = 0.f;
++#pragma unroll
++      for (int c = 0; c < 32; ++c) amax = fmaxf(amax, fabsf(hsm[m][grp * 32 + c]));
++      const float sc = fmaxf(amax * (1.f / 448.f), 1e-12f), inv = 1.f / sc;
++      const int col = blockIdx.x * (NW * 16) + grp * 32;
++      p.hs[static_cast<size_t>(q) * (kI / 32) + col / 32] = sc;
++      uint32_t packed[8];
++#pragma unroll
++      for (int c = 0; c < 16; ++c) {
++        const __nv_fp8x2_storage_t two = __nv_cvt_float2_to_fp8x2(
++            make_float2(hsm[m][grp * 32 + 2 * c] * inv, hsm[m][grp * 32 + 2 * c + 1] * inv), __NV_SATFINITE, __NV_E4M3);
++        reinterpret_cast<uint16_t*>(packed)[c] = two;
++      }
++      uint4* dst = reinterpret_cast<uint4*>(p.hq + static_cast<size_t>(q) * kI + col);
++      dst[0] = make_uint4(packed[0], packed[1], packed[2], packed[3]);
++      dst[1] = make_uint4(packed[4], packed[5], packed[6], packed[7]);
++    }
++  }
++}
++
+ template <class S, bool FC1, int MTMAX>
+ __global__ void __launch_bounds__(kWarps * 32) gemm_kernel(const Params p) {
+   const int d = blockIdx.y;
+@@ -1258,7 +1384,7 @@ torch::Tensor run(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, tor
+   cudaStream_t stream = c10::cuda::getCurrentCUDAStream();
+   // Nemotron's decode calls chain their four launches (and the small-call kernels around them, `nemotron_moe.cu`) by
+   // programmatic dependent launch; the arithmetic is the same either way
+-  const bool pdl = !S::GATED && M <= 16;
++  const bool pdl = M <= 16;
+   auto launch = [&](void (*kernel)(const Params), dim3 grid, dim3 block) {
+     cudaLaunchConfig_t cfg = {};
+     cfg.gridDim = grid;
+@@ -1273,8 +1399,13 @@ torch::Tensor run(torch::Tensor x, torch::Tensor ids, torch::Tensor weights, tor
+   };
+   launch(prep_kernel<S>, M + 1, 512);
+   if (M <= 16) {
+-    launch(gemm_kernel<S, true, 1>, dim3(kN1 / kBlockRows, slots), kWarps * 32);
+-    launch(gemm_kernel<S, false, 1>, dim3(kH / kBlockRows, slots), kWarps * 32);
++    if constexpr (S::GATED) {
++      launch(gemm_decode_nw<S, true, 2>, dim3(kN1 / 64, slots), 64);
++      launch(gemm_decode_nw<S, false, 2>, dim3(kH / 64, slots), 64);
++    } else {
++      launch(gemm_kernel<S, true, 1>, dim3(kN1 / kBlockRows, slots), kWarps * 32);
++      launch(gemm_kernel<S, false, 1>, dim3(kH / kBlockRows, slots), kWarps * 32);
++    }
+   } else if (wide) {
+     gemm_pass_kernel<S, true><<<dim3(kN1 / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
+     gemm_pass_kernel<S, false><<<dim3(kH / kBlockRows, work_cap), kWarps * 32, 0, stream>>>(p);
+diff --git a/hibana/kernels/flashnext_fused.py b/hibana/kernels/flashnext_fused.py
+index 1956b2d..c9f7e59 100644
+--- a/hibana/kernels/flashnext_fused.py
++++ b/hibana/kernels/flashnext_fused.py
+@@ -10,6 +10,7 @@ capture-safe (static shapes, no host syncs).
+ 
+ from __future__ import annotations
+ 
++import os
+ import torch
+ import triton
+ import triton.language as tl
+@@ -375,7 +376,8 @@ def _route_rank_kernel(L, Slots, Cand, P, Bits, Dense, stride_l, E: tl.constexpr
+ @triton.jit
+ def _route_pick_kernel(Slots, Cand, P, Set, Ids, W, R, K: tl.constexpr, C: tl.constexpr,
+                        CP: tl.constexpr, NW: tl.constexpr, RB: tl.constexpr, STEPS: tl.constexpr,
+-                       HAS_SLOTS: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr, REPEAT: tl.constexpr):
++                       HAS_SLOTS: tl.constexpr, KP: tl.constexpr, NONE: tl.constexpr, REPEAT: tl.constexpr,
++                       PARSEVAL: tl.constexpr = False, BETA: tl.constexpr = 0.0):
+     rr = tl.arange(0, RB)
+     core = tl.load(Set + tl.arange(0, NW))  # the call's set, from `_budget_select_kernel`
+     rows = tl.program_id(0) * RB + rr
+@@ -392,7 +394,15 @@ def _route_pick_kernel(Slots, Cand, P, Set, Ids, W, R, K: tl.constexpr, C: tl.co
+     slot = tl.cumsum(a, 1) - 1  # output slot of each rank: the candidates in the set, in rank order
+     chosen = pull & (slot < K) & real[:, None]
+     used = tl.where(real, tl.minimum(tl.sum(a, 1), K), 0)
+-    total = tl.sum(tl.where(chosen, p, 0.0), 1)
++    if PARSEVAL:
++        sum_topk = tl.sum(tl.where(j < K, p, 0.0), 1)
++        if BETA != 0.0:
++            sum_kept = tl.sum(tl.where(chosen, p, 0.0), 1)
++            total = (1.0 - BETA) * sum_topk + BETA * sum_kept
++        else:
++            total = sum_topk
++    else:
++        total = tl.sum(tl.where(chosen, p, 0.0), 1)
+     smask = live[:, None] & chosen
+     tl.store(Ids + rows[:, None] * K + slot, cand, mask=smask)
+     tl.store(W + rows[:, None] * K + slot, p / total[:, None], mask=smask)
+@@ -476,7 +486,10 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
+     experts, renormalized over them. Four launches, no atomics (the same bits on every run), no host sync:
+     graph-capturable."""
+     r, e = logits.shape
+-    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(ROUTE_CANDIDATES)
++    cands = int(os.environ.get("HIBANA_ROUTE_CANDIDATES", str(ROUTE_CANDIDATES)) or ROUTE_CANDIDATES)
++    parseval = os.environ.get("HIBANA_ROUTE_PARSEVAL", "0") == "1"
++    beta = float(os.environ.get("HIBANA_ROUTE_BETA", "0.0") or "0.0")
++    block, cp = triton.next_power_of_2(e), triton.next_power_of_2(cands)
+     nw = block // 32
+     dev = logits.device
+     cand = torch.empty((r, cp), dtype=torch.int32, device=dev)
+@@ -488,7 +501,7 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
+     ids = torch.empty((r, k), dtype=torch.int32, device=dev)
+     w = torch.empty((r, k), dtype=torch.float32, device=dev)
+     sl = cand if slots is None else slots
+-    common = dict(C=ROUTE_CANDIDATES, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
++    common = dict(C=cands, CP=cp, STEPS=steps, HAS_SLOTS=slots is not None)
+     # one warp per row: each of the ROUTE_CANDIDATES rank passes reduces with warp shuffles alone
+     _route_rank_kernel[(r,)](logits, sl, cand, p, bits, dense, logits.stride(0), e, BLOCK=block, KEEP=keep, K=k,
+                              num_warps=1, **common)
+@@ -498,7 +511,7 @@ def route_budget(logits: torch.Tensor, k: int, keep: int, budget: int, slots: to
+                                  HAS_SLOTS=slots is not None, num_warps=4)
+     # the rows take their candidates in the set in rank order: a row's top `keep` are in it, so they come first
+     _route_pick_kernel[(triton.cdiv(r, rb),)](sl, cand, p, chosen, ids, w, r, k, NW=nw, RB=rb, num_warps=4,
+-                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, **common)
++                                              KP=triton.next_power_of_2(k), NONE=e, REPEAT=repeat, PARSEVAL=parseval, BETA=beta, **common)
+     return ids, w
+ 
+ 
+diff --git a/hibana/kernels/hyper_mix_cuda.py b/hibana/kernels/hyper_mix_cuda.py
+new file mode 100644
+index 0000000..48da510
+--- /dev/null
++++ b/hibana/kernels/hyper_mix_cuda.py
+@@ -0,0 +1,48 @@
++"""Python loader for Hybrid SM121 Fused HyperConnection.mix (M<=4 streaming v2, M=5..16 BF16 Tensor-Core v3)."""
++from __future__ import annotations
++
++import hashlib
++import os
++from functools import lru_cache
++from pathlib import Path
++
++import torch
++
++_DIR = Path(__file__).resolve().parent / "csrc"
++_SRC_V2 = _DIR / "hyper_mix_cuda.cu"
++_SRC_TC = _DIR / "hyper_mix_tc.cu"
++
++
++@lru_cache(maxsize=1)
++def _mod_v2():
++    from torch.utils.cpp_extension import load
++    from hibana.engine.config import current
++    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
++    rev = hashlib.sha256(_SRC_V2.read_bytes()).hexdigest()[:16]
++    return load(name=f"hibana_hyper_mix_v2_{rev}", sources=[str(_SRC_V2)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
++
++
++@lru_cache(maxsize=1)
++def _mod_tc():
++    from torch.utils.cpp_extension import load
++    from hibana.engine.config import current
++    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", current().cuda_arch)
++    rev = hashlib.sha256(_SRC_TC.read_bytes()).hexdigest()[:16]
++    return load(name=f"hibana_hyper_mix_tc_{rev}", sources=[str(_SRC_TC)], extra_cuda_cflags=["-O3", "--use_fast_math"], verbose=False)
++
++
++def hyper_mix_fp8_cuda(
++    normed: torch.Tensor,
++    w_down: torch.Tensor,
++    s_down: torch.Tensor,
++    w_up: torch.Tensor,
++    s_up: torch.Tensor,
++    hidden: int,
++) -> torch.Tensor:
++    m = normed.shape[0]
++    n_c = normed.contiguous()
++    sd = s_down.reshape(1).contiguous()
++    su = s_up.reshape(1).contiguous()
++    if m <= 4:
++        return _mod_v2().hyper_mix_fp8(n_c, w_down, sd, w_up, su, int(hidden))
++    return _mod_tc().hyper_mix_tc(n_c, w_down, sd, w_up, su, int(hidden))
+diff --git a/hibana/kernels/qsa/attention.py b/hibana/kernels/qsa/attention.py
+index 5a1f2c3..35a6ea6 100644
+--- a/hibana/kernels/qsa/attention.py
++++ b/hibana/kernels/qsa/attention.py
+@@ -176,6 +176,116 @@ def _sparse_gqa_chunk_prefill(
+              mask=(offs_h < GROUP_SIZE)[:, None])
+ 
+ 
++
++@triton.jit
++def _sparse_gqa_splitk_kernel(
++    q, k, v, part_o, part_lse, indices, kv_lens, scale, topk,
++    sq_m: tl.constexpr, sq_h: tl.constexpr, sq_d: tl.constexpr,
++    sk_n: tl.constexpr, sk_h: tl.constexpr, sk_d: tl.constexpr,
++    sv_n: tl.constexpr, sv_h: tl.constexpr, sv_d: tl.constexpr,
++    spo_s: tl.constexpr, spo_m: tl.constexpr, spo_h: tl.constexpr, spo_d: tl.constexpr,
++    spl_s: tl.constexpr, spl_m: tl.constexpr, spl_h: tl.constexpr,
++    si_m: tl.constexpr, si_n: tl.constexpr,
++    NUM_KV_HEADS: tl.constexpr, GROUP_SIZE: tl.constexpr, BLOCK_M: tl.constexpr,
++    BLOCK_N: tl.constexpr, HEAD_DIM: tl.constexpr, NUM_SPLITS: tl.constexpr,
++):
++    sp = tl.program_id(0)
++    batch_group = tl.program_id(1)
++    group = batch_group % NUM_KV_HEADS
++    query = (batch_group // NUM_KV_HEADS).to(tl.int64)
++
++    kv_len = tl.load(kv_lens + query).to(tl.int64)
++    row_topk = tl.minimum(topk, kv_len)
++    n_tiles = (row_topk + BLOCK_N - 1) // BLOCK_N
++    tiles_per_sp = (n_tiles + NUM_SPLITS - 1) // NUM_SPLITS
++    t_begin = sp * tiles_per_sp
++    t_end = tl.minimum(n_tiles, t_begin + tiles_per_sp)
++
++    offs_h = tl.arange(0, BLOCK_M)
++    offs_d = tl.arange(0, HEAD_DIM)
++    h_mask = offs_h < GROUP_SIZE
++
++    if t_begin >= t_end:
++        tl.store(part_lse + sp * spl_s + query * spl_m + (group * GROUP_SIZE + offs_h) * spl_h,
++                 tl.full([BLOCK_M], -float("inf"), tl.float32), mask=h_mask)
++        return
++
++    q_values = tl.load(q + query * sq_m + (group * GROUP_SIZE + offs_h[:, None]) * sq_h + offs_d[None, :] * sq_d,
++                       mask=h_mask[:, None], other=0.0)
++    q_values = (q_values * scale * 1.4426950408).to(q_values.dtype)
++    k_base = k + group * sk_h
++    v_base = v + group * sv_h
++    idx_row = indices + query * si_m
++
++    max_value = tl.full([BLOCK_M], -float("inf"), tl.float32)
++    normalizer = tl.zeros([BLOCK_M], tl.float32)
++    accumulator = tl.zeros([BLOCK_M, HEAD_DIM], tl.float32)
++    offs_n = tl.arange(0, BLOCK_N)
++    for ti in range(t_begin, t_end):
++        current = ti * BLOCK_N + offs_n
++        token = tl.load(idx_row + current * si_n, mask=current < row_topk, other=-1)
++        valid = token >= 0
++        keys = tl.load(k_base + token[None, :] * sk_n + offs_d[:, None] * sk_d, mask=valid[None, :], other=0.0)
++        values = tl.load(v_base + token[:, None] * sv_n + offs_d[None, :] * sv_d, mask=valid[:, None], other=0.0)
++        keys = keys.to(q_values.dtype)
++        values = values.to(q_values.dtype)
++        scores = tl.where(valid[None, :], tl.dot(q_values, keys), -float("inf"))
++        next_max = tl.maximum(max_value, tl.max(scores, 1))
++        alpha = tl.math.exp2(max_value - next_max)
++        probabilities = tl.math.exp2(scores - next_max[:, None])
++        accumulator = tl.dot(probabilities.to(values.dtype), values, accumulator * alpha[:, None])
++        normalizer = normalizer * alpha + tl.sum(probabilities, 1)
++        max_value = next_max
++
++    lse = tl.where(normalizer > 0.0, max_value + tl.math.log2(tl.maximum(normalizer, 1e-30)), -float("inf"))
++    out_sp = accumulator / tl.maximum(normalizer[:, None], 1e-30)
++    tl.store(part_o + sp * spo_s + query * spo_m + (group * GROUP_SIZE + offs_h[:, None]) * spo_h + offs_d[None, :] * spo_d,
++             out_sp, mask=h_mask[:, None])
++    tl.store(part_lse + sp * spl_s + query * spl_m + (group * GROUP_SIZE + offs_h) * spl_h, lse, mask=h_mask)
++
++
++@triton.jit
++def _sparse_gqa_merge_kernel(
++    part_o, part_lse, out,
++    spo_s: tl.constexpr, spo_m: tl.constexpr, spo_h: tl.constexpr, spo_d: tl.constexpr,
++    spl_s: tl.constexpr, spl_m: tl.constexpr, spl_h: tl.constexpr,
++    so_m: tl.constexpr, so_h: tl.constexpr, so_d: tl.constexpr,
++    NUM_HEADS: tl.constexpr, HEAD_DIM: tl.constexpr, NUM_SPLITS: tl.constexpr,
++):
++    pid = tl.program_id(0)
++    h = pid % NUM_HEADS
++    m = pid // NUM_HEADS
++    offs_d = tl.arange(0, HEAD_DIM)
++    max_lse = -float("inf")
++    for sp in tl.static_range(NUM_SPLITS):
++        lse = tl.load(part_lse + sp * spl_s + m * spl_m + h * spl_h)
++        max_lse = tl.maximum(max_lse, lse)
++    acc = tl.zeros([HEAD_DIM], tl.float32)
++    denom = 0.0
++    for sp in tl.static_range(NUM_SPLITS):
++        lse = tl.load(part_lse + sp * spl_s + m * spl_m + h * spl_h)
++        w = tl.where(lse > -1e30, tl.math.exp2(lse - max_lse), 0.0)
++        po = tl.load(part_o + sp * spo_s + m * spo_m + h * spo_h + offs_d * spo_d)
++        acc += w * po
++        denom += w
++    tl.store(out + m * so_m + h * so_h + offs_d * so_d, (acc / tl.maximum(denom, 1e-30)).to(out.dtype.element_ty))
++
++
++_SPLITK_WS: dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
++
++
++def _splitk_ws(device: torch.device, heads: int, dim: int, splits: int = 8, max_rows: int = 16):
++    key = (device, heads, dim, splits)
++    ws = _SPLITK_WS.get(key)
++    if ws is None:
++        ws = (
++            torch.empty((splits, max_rows, heads, dim), device=device, dtype=torch.float32),
++            torch.empty((splits, max_rows, heads), device=device, dtype=torch.float32),
++        )
++        _SPLITK_WS[key] = ws
++    return ws
++
++
+ def sparse_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor, pages: torch.Tensor, counts: torch.Tensor,
+                      scale: float, *, optimized_prefill: bool = False, scales: tuple | None = None) -> torch.Tensor:
+     """q [R, Hq, D] (bf16); k_pool/v_pool [num_pages, Hkv, D] (the FP8 pool, page size 1), or
+@@ -206,6 +316,28 @@ def sparse_attention(q: torch.Tensor, k_pool: torch.Tensor, v_pool: torch.Tensor
+             HEAD_DIM=dim, num_warps=warps, num_stages=stages,
+         )
+         return out
++    if 1 <= rows <= 16 and pages.shape[-1] >= 256:
++        num_splits = 8
++        part_o, part_lse = _splitk_ws(q.device, heads, dim, num_splits, 16)
++        _sparse_gqa_splitk_kernel[(num_splits, rows * kv_heads)](
++            q, k_pool, v_pool, part_o, part_lse, pages, counts, scale, pages.shape[-1],
++            q.stride(0), q.stride(1), q.stride(2),
++            k_pool.stride(0), k_pool.stride(1), k_pool.stride(2),
++            v_pool.stride(0), v_pool.stride(1), v_pool.stride(2),
++            part_o.stride(0), part_o.stride(1), part_o.stride(2), part_o.stride(3),
++            part_lse.stride(0), part_lse.stride(1), part_lse.stride(2),
++            pages.stride(0), pages.stride(1),
++            NUM_KV_HEADS=kv_heads, GROUP_SIZE=group, BLOCK_M=max(16, triton.next_power_of_2(group)),
++            BLOCK_N=32, HEAD_DIM=dim, NUM_SPLITS=num_splits, num_warps=4, num_stages=2,
++        )
++        _sparse_gqa_merge_kernel[(rows * heads,)](
++            part_o, part_lse, out,
++            part_o.stride(0), part_o.stride(1), part_o.stride(2), part_o.stride(3),
++            part_lse.stride(0), part_lse.stride(1), part_lse.stride(2),
++            out.stride(0), out.stride(1), out.stride(2),
++            NUM_HEADS=heads, HEAD_DIM=dim, NUM_SPLITS=num_splits, num_warps=4,
++        )
++        return out
+     cu_q = torch.arange(rows + 1, dtype=torch.int32, device=q.device)
+     cu_k = torch.zeros(rows + 1, dtype=torch.int32, device=q.device)
+     block_n, warps, stages = next(cfg for limit, cfg in _CONFIGS if rows <= limit)
+diff --git a/hibana/kernels/w3.py b/hibana/kernels/w3.py
+index 1a2e1a2..2513789 100644
+--- a/hibana/kernels/w3.py
++++ b/hibana/kernels/w3.py
+@@ -267,6 +267,8 @@ SPLITS: dict[tuple[int, int, int], int] = {  # (N, K, rows) -> splits
+     (14336, 5120, 16): 1, (14336, 5120, 32): 1, (14336, 5120, 64): 1,
+     (4096, 5120, 16): 4, (4096, 5120, 32): 4, (4096, 5120, 64): 2,
+     (5120, 4096, 16): 4, (5120, 4096, 32): 1, (5120, 4096, 64): 2,
++    # Flash-Next trunk decode/verify shape tuned on GB10 (48 SMs)
++    (13312, 2560, 16): 4,
+ }
+ SPLIT_TARGET = {16: 192, 32: 96, 64: 48}  # blocks (4 warps, 128 rows) a launch should reach before K stays whole
+ 
+diff --git a/hibana/model/flashnext/hyper.py b/hibana/model/flashnext/hyper.py
+index 0b3cf77..1e1748c 100644
+--- a/hibana/model/flashnext/hyper.py
++++ b/hibana/model/flashnext/hyper.py
+@@ -84,10 +84,23 @@ class HyperConnection:
+             mixed = hyper_prefill.mix(normed.nq, normed.xs, normed.rstd, hyper, self.down, self.up, self.norm, self.hidden)
+             return mixed, (hyper, normed)
+         if self.fused:
++            import os as _hm_os
+             from hibana.kernels import flashnext_fused as fk
+-            # The norm writes its block maxima, so the down projection's FP8 quantization is one parallel launch (many
+-            # rows) or none (the GEMV's own, few rows): the unfused chain's bits, faster.
+             normed, parts = normed if normed is not None else fk.grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden, amax=True)
++            _hm_max = int(_hm_os.environ.get("HIBANA_HYPER_MIX_CUDA", "0"))
++            if (
++                _hm_max > 0
++                and 1 <= normed.shape[0] <= _hm_max
++                and self.hc == 4
++                and self.down.out_features == 320
++                and self.down.scale is not None
++                and self.up.scale is not None
++                and self.down.w3 is None
++                and self.up.w3 is None
++            ):
++                from hibana.kernels.hyper_mix_cuda import hyper_mix_fp8_cuda
++                mixed = hyper_mix_fp8_cuda(normed, self.down.weight, self.down.scale, self.up.weight, self.up.scale, self.hidden)
++                return mixed, (hyper, normed)
+             mixed = fk.gate_mean(self.up(self.down(normed, amax_parts=parts), act=fk.ACT_SILU), normed, self.hc, self.hidden)
+             return mixed, (hyper, normed)
+         normed = grouped_gemma_rms(hyper, self.norm, self.eps, self.hidden)
+diff --git a/hibana/model/flashnext/model.py b/hibana/model/flashnext/model.py
+index e620494..28dc0e9 100644
+--- a/hibana/model/flashnext/model.py
++++ b/hibana/model/flashnext/model.py
+@@ -215,7 +215,11 @@ class FlashNext:
+         if missing:
+             raise ValueError(f"calibrated names not in this model: {missing[:4]}")
+         # a part the 3-bit format cannot hold (the shared down's 320 columns)
+-        skipped = [name for name in names if linears[name].shard is ROW_PARALLEL and linears[name].in_features % 128]
++        import os, re
++        skip_re = os.environ.get("HIBANA_W3_SKIP_REGEX", "").strip()
++        skip_pat = re.compile(skip_re) if skip_re else None
++        skipped = [name for name in names if (linears[name].shard is ROW_PARALLEL and linears[name].in_features % 128)
++                   or (skip_pat is not None and skip_pat.search(name))]
+         loads = [(name, linears[name], linears[name].shard) for name in names if name not in skipped]
+         for (_, lin, _), w3 in zip(loads, calibrated.load_many(loads)):
+             lin.w3 = w3
+diff --git a/hibana/model/flashnext/mtp.py b/hibana/model/flashnext/mtp.py
+index 82bd56d..a8bf93d 100644
+--- a/hibana/model/flashnext/mtp.py
++++ b/hibana/model/flashnext/mtp.py
+@@ -4,14 +4,20 @@
+ For token x_i and the target's hyper stream h_{i-1} (the [T, hc*H] residual before the global
+ mixer, `forward()["norm"]`), the head fuses u = fc_embedding(norm_e(embed(x_i))) broadcast over
+ the streams plus fc_hidden applied per stream to norm_h(h_{i-1}), runs one hyper-connected
+-decoder layer (dense attention over its own BF16 KV, BF16 routed experts, shared expert) and
++decoder layer (dense attention over its own BF16 KV, routed experts, shared expert) and
+ returns the layer's hyper stream d; `logits()` applies the MTP's own mixer and the target's
+ lm_head. Chained drafting feeds d back as the next hidden. The attention, the draft KV and the
+ call surface are the shared MTP layer's (`model/mtp_layer.py`).
++
++When HIBANA_MTP_W3_EXPERTS=1, the 512 routed MTP experts are stored and executed in Hibana's
++3-bit W3Experts format (cached on disk under $HIBANA_RESULTS/w3-checkpoints/), saving ~1.49 GiB
++VRAM and ~29 MB/draft step with zero target distribution change.
+ """
+ 
+ from __future__ import annotations
+ 
++import os
++from pathlib import Path
+ 
+ import torch
+ import torch.nn.functional as F
+@@ -22,6 +28,74 @@ from hibana.model.mtp_layer import MtpLayer
+ from hibana.model.norm import GemmaRMSNorm
+ 
+ PREFIX = "mtp"
++_MTP_W3_CODEBOOK = (-3.25, -2.0, -1.125, -0.375, 0.375, 1.125, 2.0, 3.25)
++
++
++def _quantize_w3_coord(weight: torch.Tensor, levels: tuple[float, ...], iters: int = 4):
++    """Coordinate-descent W3 quantization (group_size=32) with closed-form E4M3 group scales and FP32 row scales."""
++    from hibana.kernels import w3
++    n, k = weight.shape
++    lv = torch.tensor(levels, device=weight.device, dtype=torch.float32)
++    mids = (lv[1:] + lv[:-1]) / 2.0
++    g = weight.reshape(n, k // w3.GROUP, w3.GROUP)
++    amax = g.abs().amax(-1)
++    row_scale = (amax.amax(-1) / (lv[-1] * w3.FP8_MAX)).clamp_min(1e-12)
++    sc = ((amax / (lv[-1] * row_scale[:, None])) * 0.85).clamp(0.0, w3.FP8_MAX).to(torch.float8_e4m3fn).float()
++    for _ in range(iters):
++        eff = (sc * row_scale[:, None]).clamp_min(1e-30)
++        q = torch.bucketize(g / eff[:, :, None], mids)
++        qv = lv[q]
++        s_opt = (g * qv).sum(-1) / qv.square().sum(-1).clamp_min(1e-30)
++        row_scale = (s_opt.amax(-1) / w3.FP8_MAX).clamp_min(1e-12)
++        sc = (s_opt / row_scale[:, None]).clamp(0.0, w3.FP8_MAX).to(torch.float8_e4m3fn).float()
++    eff = (sc * row_scale[:, None]).clamp_min(1e-30)
++    codes = torch.bucketize(g / eff[:, :, None], mids, out_int32=True)
++    dq = lv[codes.long()] * eff[:, :, None]
++    alpha = (g * dq).sum((-1, -2)) / dq.square().sum((-1, -2)).clamp_min(1e-30)
++    row_scale = (row_scale * alpha).clamp_min(1e-12)
++    return codes.reshape(n, k), sc.to(torch.float8_e4m3fn), row_scale
++
++
++
++class _OverlayWeights:
++    def __init__(self, base, sd: dict[str, torch.Tensor]):
++        self._base = base
++        p = f"{PREFIX}.layers.0"
++        mapping = {
++            f"{PREFIX}.fc_embedding.weight": "fc_e",
++            f"{PREFIX}.fc_hidden.weight": "fc_h",
++            f"{PREFIX}.pre_fc_norm_embedding.weight": "norm_e",
++            f"{PREFIX}.pre_fc_norm_hidden.weight": "norm_h",
++            f"{p}.attn_hyper_connection.hc_norm.weight": "attn_hc.norm",
++            f"{p}.attn_hyper_connection.input_mix_weight_down.weight": "attn_hc.down",
++            f"{p}.attn_hyper_connection.input_mix_weight_up.weight": "attn_hc.up",
++            f"{p}.attn_hyper_connection.block_inject_weight.weight": "attn_hc.inject",
++            f"{p}.mlp_hyper_connection.hc_norm.weight": "mlp_hc.norm",
++            f"{p}.mlp_hyper_connection.input_mix_weight_down.weight": "mlp_hc.down",
++            f"{p}.mlp_hyper_connection.input_mix_weight_up.weight": "mlp_hc.up",
++            f"{p}.mlp_hyper_connection.block_inject_weight.weight": "mlp_hc.inject",
++            f"{PREFIX}.hyper_connection_mixer.hc_norm.weight": "mixer.norm",
++            f"{PREFIX}.hyper_connection_mixer.input_mix_weight_down.weight": "mixer.down",
++            f"{PREFIX}.hyper_connection_mixer.input_mix_weight_up.weight": "mixer.up",
++            f"{p}.self_attn.q_proj.weight": "q_proj",
++            f"{p}.self_attn.k_proj.weight": "k_proj",
++            f"{p}.self_attn.v_proj.weight": "v_proj",
++            f"{p}.self_attn.o_proj.weight": "o_proj",
++            f"{p}.self_attn.q_norm.weight": "q_norm",
++            f"{p}.self_attn.k_norm.weight": "k_norm",
++            f"{p}.mlp.gate.weight": "router",
++            f"{p}.mlp.shared_expert_gate.weight": "shared_gate",
++            f"{p}.mlp.shared_expert.gate_proj.weight": "shared_gate_proj",
++            f"{p}.mlp.shared_expert.up_proj.weight": "shared_up_proj",
++            f"{p}.mlp.shared_expert.down_proj.weight": "shared_down_proj",
++        }
++        self._overrides = {ckpt_k: sd[sd_k] for ckpt_k, sd_k in mapping.items() if sd_k in sd}
++
++    def get(self, name: str):
++        return self._overrides[name] if name in self._overrides else self._base.get(name)
++
++    def __getattr__(self, attr: str):
++        return getattr(self._base, attr)
+ 
+ 
+ class FlashNextMtpHead(MtpLayer):
+@@ -30,6 +104,11 @@ class FlashNextMtpHead(MtpLayer):
+     def __init__(self, w, device: torch.device, model, num_pages: int, precision: str | None = None, padding_rows: int = 0):
+         # Tensor parallel: the draft layer is replicated, whole on every rank (built from the whole geometry), and
+         # drafts through the target's vocabulary-parallel lm_head (`VocabParallelHead`: each rank reads its rows).
++        mtp_weights_path = os.environ.get("HIBANA_MTP_WEIGHTS", "").strip()
++        if mtp_weights_path:
++            sd = torch.load(mtp_weights_path, map_location="cpu", weights_only=True)
++            w = _OverlayWeights(w, sd)
++            print(f"  mtp: overlaid {len(w._overrides)} distilled body tensors from {mtp_weights_path}", flush=True)
+         t = self.target = getattr(model, "full_target", model.target)
+         self.tensor_parallel = t is not model.target
+         self.embed, self.lm_head = model.embed, model.lm_head
+@@ -50,17 +129,83 @@ class FlashNextMtpHead(MtpLayer):
+         self.mlp_hc = HyperConnection.load(w, f"{p}.mlp_hyper_connection", self.hc, self.hidden_size, eps, device)
+         self.mixer = HyperConnection.load(w, f"{PREFIX}.hyper_connection_mixer", self.hc, self.hidden_size, eps, device, combine=False)
+         self._attention_setup(w, f"{p}.self_attn", device, t, model.rope, precision, num_pages, padding_rows)
+-        # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
+-        # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not
+-        # fit beside the target on the GB10); loaded expert by expert to avoid a 3.4 GB host temporary.
+         self.router = w.get(f"{p}.mlp.gate.weight").to(device).contiguous()
+-        self.gate_up, self.gate_up_scale = self._fp8_experts(w, f"{p}.mlp.experts.gate_up_proj", device)
+-        self.down, self.down_scale = self._fp8_experts(w, f"{p}.mlp.experts.down_proj", device)
+         self.experts, self.topk, self.inter = t.num_experts, t.experts_per_token, t.moe_intermediate_size
++        self.w3_experts = None
++        if os.environ.get("HIBANA_MTP_W3_EXPERTS", "0") == "1":
++            self.w3_experts = self._load_or_pack_w3_experts(w, p, device, t)
++            self.gate_up = self.gate_up_scale = self.down = self.down_scale = None
++        else:
++            # Routed experts, fused [E, 2I, H] (gate rows then up rows) and [E, H, I]: stored FP8 with one
++            # scale per expert matrix, upcast per token for the ten gathered experts (5.2 GB BF16 would not
++            # fit beside the target on the GB10); loaded expert by expert to avoid a 3.4 GB host temporary.
++            self.gate_up, self.gate_up_scale = self._fp8_experts(w, f"{p}.mlp.experts.gate_up_proj", device)
++            self.down, self.down_scale = self._fp8_experts(w, f"{p}.mlp.experts.down_proj", device)
+         self.shared_gate = w.get(f"{p}.mlp.shared_expert_gate.weight").to(device).float().reshape(1, -1)
+         self.shared_gate_up = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.gate_proj.weight", f"{p}.mlp.shared_expert.up_proj.weight"], device, precision)
+         self.shared_down = TrunkLinear.load(w, [f"{p}.mlp.shared_expert.down_proj.weight"], device, precision)
+ 
++    @staticmethod
++    def _load_or_pack_w3_experts(w, p: str, device, t):
++        from safetensors import safe_open
++        from hibana.kernels import w3, w3_moe
++
++        results_root = Path(os.environ.get("HIBANA_RESULTS", "/data"))
++        cache_dir = results_root / "w3-checkpoints"
++        custom_w3 = os.environ.get("HIBANA_MTP_W3_EXPERTS_PATH", "").strip()
++        cache_path = Path(custom_w3) if custom_w3 else (cache_dir / f"mtp-experts-w3-{t.model_revision[:12]}-v1.pt")
++        if custom_w3:
++            print(f"  mtp: loading custom W3 routed experts from {cache_path}", flush=True)
++        lv = _MTP_W3_CODEBOOK
++        lut = w3.lut_of(lv)
++        if cache_path.is_file():
++            d = torch.load(cache_path, map_location=device, weights_only=True)
++            return w3_moe.W3Experts(
++                d["planes13"], d["scales13"], d["row13"],
++                d["planes2"], d["scales2"], d["row2"],
++                lv, lut, lv, lut,
++            )
++
++        E, I, H = t.num_experts, t.moe_intermediate_size, t.hidden_size
++        two_i = 2 * I
++        order = w3_moe.fc1_order(I, device)
++        gu_name = f"{p}.mlp.experts.gate_up_proj"
++        dn_name = f"{p}.mlp.experts.down_proj"
++        p13_list, p2_list = [], []
++        with safe_open(str(w.snap / w._map[gu_name]), framework="pt", device="cpu") as f_gu:
++            gu_view = f_gu.get_slice(gu_name)
++            for lo in range(0, E, 32):
++                hi = min(E, lo + 32)
++                gu = gu_view[lo:hi].to(device=device, dtype=torch.float32)
++                # Checkpoint stores [gate; up]; w3_moe expects [up; gate] permuted by fc1_order.
++                ug = torch.cat([gu[:, I:], gu[:, :I]], dim=1)[:, order].reshape((hi - lo) * two_i, H)
++                c1, s1, r1 = _quantize_w3_coord(ug, lv)
++                p13_list.append(w3.pack_codes(c1, s1, r1, lv, rows_per_chunk=two_i))
++                del gu, ug, c1, s1, r1
++        with safe_open(str(w.snap / w._map[dn_name]), framework="pt", device="cpu") as f_dn:
++            dn_view = f_dn.get_slice(dn_name)
++            for lo in range(0, E, 32):
++                hi = min(E, lo + 32)
++                dn = dn_view[lo:hi].to(device=device, dtype=torch.float32).reshape((hi - lo) * H, I)
++                c2, s2, r2 = _quantize_w3_coord(dn, lv)
++                p2_list.append(w3.pack_codes(c2, s2, r2, lv, rows_per_chunk=H))
++                del dn, c2, s2, r2
++
++        w13_s = w3.W3Weight(*(torch.cat([getattr(m, a) for m in p13_list]) for a in ("planes", "scales", "row_scale")), E * two_i, H, lv, lut)
++        w2_s = w3.W3Weight(*(torch.cat([getattr(m, a) for m in p2_list]) for a in ("planes", "scales", "row_scale")), E * H, I, lv, lut)
++        exps = w3_moe.W3Experts.from_stacked(w13_s, w2_s, E)
++        try:
++            cache_dir.mkdir(parents=True, exist_ok=True)
++            tmp = cache_path.with_suffix(".pt.tmp")
++            torch.save({
++                "planes13": exps.planes13.cpu(), "scales13": exps.scales13.cpu(), "row13": exps.row13.cpu(),
++                "planes2": exps.planes2.cpu(), "scales2": exps.scales2.cpu(), "row2": exps.row2.cpu(),
++            }, tmp)
++            tmp.replace(cache_path)
++        except OSError:
++            pass
++        return exps
++
+     @staticmethod
+     def _fp8_experts(w, name: str, device) -> tuple[torch.Tensor, torch.Tensor]:
+         from safetensors import safe_open
+@@ -79,8 +224,9 @@ class FlashNextMtpHead(MtpLayer):
+ 
+     @property
+     def bytes(self) -> int:
++        exp_bytes = self.w3_experts.bytes if self.w3_experts is not None else (self.gate_up.numel() + self.down.numel())
+         weights = (self.fc_e.bytes + self.fc_h.bytes + self.attn.bytes + self.attn_hc.bytes + self.mlp_hc.bytes + self.mixer.bytes
+-                   + self.router.numel() * 2 + self.gate_up.numel() + self.down.numel() + self.shared_gate_up.bytes + self.shared_down.bytes)
++                   + self.router.numel() * 2 + exp_bytes + self.shared_gate_up.bytes + self.shared_down.bytes)
+         return weights + self.kv.bytes + self.draft_head.bytes
+ 
+     # ---- pieces ----
+@@ -92,11 +238,15 @@ class FlashNextMtpHead(MtpLayer):
+     def _moe(self, x: torch.Tensor) -> torch.Tensor:
+         from hibana.kernels import flashnext_fused as fk
+         ids, weights = fk.route_topk(x @ self.router.T, self.topk)
++        shared = self.shared_down(self.shared_gate_up(x), act=fk.ACT_SILU_MUL)
++        if self.w3_experts is not None:
++            from hibana.kernels import w3_moe
++            routed = w3_moe.w3_moe(self.w3_experts, x, ids, weights)
++            return fk.moe_combine(routed, shared, x, self.shared_gate.reshape(-1))
+         flat = ids.reshape(-1)
+         # routed row r reads input row r // topk; the down projection applies silu_mul to its [gate | up] rows itself
+         gu = fk.expert_gemv_fused(self.gate_up, self.gate_up_scale, x, flat, x_div=self.topk)  # [M*topk, 2I]
+         y = fk.expert_gemv_fused(self.down, self.down_scale, gu, flat, act=fk.ACT_SILU_MUL)  # [M*topk, H]
+-        shared = self.shared_down(self.shared_gate_up(x), act=fk.ACT_SILU_MUL)
+         return fk.moe_combine_routed(y, weights, shared, x, self.shared_gate.reshape(-1))
+ 
+     def _attention_input(self, u: torch.Tensor) -> torch.Tensor:

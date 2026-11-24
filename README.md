@@ -138,7 +138,7 @@ Put overrides in `.env` (see `.env.example`).
 | `HOST` / `PORT` | `0.0.0.0` / `8888` | Listen address |
 | `HF_CACHE` | `~/.cache/huggingface` | Shared Hugging Face cache for the checkpoint |
 | `DATA_DIR` | `~/.cache/hibana-flashnext` | 3-bit copies, SSD tier, logs |
-| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v1` | Engine image tag |
+| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v2` | Engine image tag |
 
 ## Quality and limits
 

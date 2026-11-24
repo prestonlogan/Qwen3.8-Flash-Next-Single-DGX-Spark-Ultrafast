@@ -4,7 +4,7 @@
 name: hibana-flashnext-vision
 
 x-image: &image
-  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v1}
+  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v2}
   build:
     context: .
     args:
@@ -24,6 +24,8 @@ services:
     environment:
       <<: *paths
       PROPOSER: ${PROPOSER:-mtp}
+      TUNING: ${TUNING:-v1.1}
+      DRAFT_HEAD_REPO: ${DRAFT_HEAD_REPO:-}
     volumes:
       - ./tools/download.sh:/download.sh:ro
       - ${HF_CACHE:-~/.cache/huggingface}:/hf
@@ -52,6 +54,9 @@ services:
       <<: *paths
       HF_HUB_OFFLINE: "1"
       PROFILE: ${PROFILE:-fast}
+      # v1.1 (default): exact acceptance, distilled draft head, repetition guard, GB10 kernels (tools/serve.sh).
+      # stock: Hibana's own fast settings, as in v1.0.0.
+      TUNING: ${TUNING:-v1.1}
       PROPOSER: ${PROPOSER:-mtp}
       SPEC: ${SPEC:-}
       PARALLEL: ${PARALLEL:-}
@@ -63,9 +68,10 @@ services:
       PORT: ${PORT:-8888}
       # Image input (patches 0002 and 0003): 1 loads the vision tower (0.84 GiB), 0 serves text only.
       HIBANA_VISION: ${VISION:-1}
-      # Draft head reads only the 131,072 most common vocabulary rows: +3-10% decode on English and code. The model
-      # still verifies against the full vocabulary. Set 0 (full vocabulary) for mostly non-English text.
-      HIBANA_DRAFT_VOCAB: ${DRAFT_VOCAB:-131072}
+      # Draft head reads only the most common vocabulary rows (empty: 98,304 with TUNING=v1.1, 131,072 with stock):
+      # faster decode on English and code. The model still verifies against the full vocabulary. Set 0 (full
+      # vocabulary) for mostly non-English text.
+      HIBANA_DRAFT_VOCAB: ${DRAFT_VOCAB:-}
     volumes:
       - ./tools/serve.sh:/serve.sh:ro
       - ${HF_CACHE:-~/.cache/huggingface}:/hf:ro
