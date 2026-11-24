@@ -26,7 +26,7 @@ port 8888, thinking and tool calls included.
 > repo adds two Hibana patches for images and ships the `fast` profile by default. If you only need text, dedene's
 > recipe with `PROFILE=fast` gives the same text speed.
 
-*Real time, no speed-up: this recipe doing an agentic coding task in DeepSeek Harness (reasoning effort Low, thinking expanded). Jump cuts skip pauses while tool calls run. [MP4](media/dsh-agentic-demo.mp4)*
+*Real time, no speed-up: v1.1.0 default (`TUNING=v1.1`) in DeepSeek Harness at reasoning effort Xhigh, building a small Python inventory CLI (6 files, 3 unit tests). The whole task took 34 s; this clip is the middle 14.6 s, with the harness's decode speed (`tok/s`) under the composer. [Prompt and how it was made](media/demo/README.md) · [MP4](media/dsh-agentic-demo.mp4)*
 
 [![This recipe running an agentic coding task in DeepSeek Harness: reasoning, tool calls and code streaming in real time](media/dsh-agentic-demo.gif)](media/dsh-agentic-demo.mp4)
 

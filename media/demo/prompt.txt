@@ -1,0 +1,41 @@
+Work in the current directory, which is empty. Do not search the web, install packages, or create any files beyond those listed. Use only the Python standard library. No docstrings or comments.
+
+Step 1. Create `data.csv` with exactly this content:
+name,qty,price
+widget,10,2.50
+gadget,3,10.00
+doohickey,0,7.25
+gizmo,25,1.20
+
+Step 2. Create `inventory/__init__.py` (empty) and `inventory/models.py` containing a frozen dataclass `Item` with fields `name: str`, `qty: int`, `price: float`.
+
+Step 3. Create `inventory/loader.py` with `load_csv(path: str) -> list[Item]` that reads the CSV with `csv.DictReader` and converts qty to int and price to float.
+
+Step 4. Create `inventory/report.py` with:
+- `total_value(items: list[Item]) -> float`: sum of qty * price.
+- `low_stock(items: list[Item], threshold: int) -> list[Item]`: items with qty < threshold, sorted by qty ascending.
+
+Step 5. Create `inventory/cli.py` so that `python -m inventory.cli data.csv --threshold 5` uses argparse and prints exactly two lines:
+Total value: 85.00
+Low stock: doohickey, gadget
+
+Step 6. Create `test_inventory.py` with exactly this content:
+import unittest
+from inventory.loader import load_csv
+from inventory.report import total_value, low_stock
+
+class TestInventory(unittest.TestCase):
+    def setUp(self):
+        self.items = load_csv("data.csv")
+    def test_count(self):
+        self.assertEqual(len(self.items), 4)
+    def test_total(self):
+        self.assertAlmostEqual(total_value(self.items), 85.0)
+    def test_low_stock(self):
+        self.assertEqual([i.name for i in low_stock(self.items, 5)], ["doohickey", "gadget"])
+
+Step 7. Run `python -m unittest`. If any test fails, fix the code (not the tests) and rerun. Stop after at most 2 reruns.
+
+Step 8. Run `python -m inventory.cli data.csv --threshold 5`.
+
+Step 9. Reply with
