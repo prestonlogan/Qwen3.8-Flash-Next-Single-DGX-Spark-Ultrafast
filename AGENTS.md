@@ -14,6 +14,8 @@ Hibana's `fast` profile with `TUNING=v1.1` as the default.
   can start without a new download, then (TUNING=v1.1) the distilled draft head from `DRAFT_HEAD_REPO`, SHA-256
   checked, into `DATA_DIR/w3-checkpoints`. `exit 0` last.
 - `tools/serve.sh`: maps this recipe's settings to `hibana serve flashnext` flags and `HIBANA_*`.
+- `tools/health.sh`: the hibana healthcheck. 200 is healthy; on 503 (Hibana's engine failed, or it is draining) it
+  sends SIGTERM to PID 1, then SIGKILL a minute later, so the container exits and `RESTART=unless-stopped` can act.
 - `tools/check.py`: stdlib-only functional checks against a running server, including image input.
 - Knobs are `${VAR:-default}` in compose and serve.sh; `.env.example` documents each one.
 - `patches/`: applied in order by the Dockerfile after `uv sync`, each followed by a `grep -q` or test.

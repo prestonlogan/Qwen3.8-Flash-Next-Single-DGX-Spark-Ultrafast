@@ -191,6 +191,7 @@ Put overrides in `.env` (see `.env.example`).
 | `SSD` / `SSD_GIB` | `on` / `100` | Prefix cache tier on the NVMe, in `DATA_DIR/ssd` |
 | `HOST_FLOOR_GIB` | `12` | Memory left for everything else; Hibana's memory guard stops the server below half of it |
 | `HOST` / `PORT` | `0.0.0.0` / `8888` | Listen address |
+| `RESTART` | `no` | Docker restart policy. Set `unless-stopped` for a server that runs unattended: it restarts after a reboot and after an engine failure (see below) |
 | `HF_CACHE` | `~/.cache/huggingface` | Shared Hugging Face cache for the checkpoint |
 | `DATA_DIR` | `~/.cache/hibana-flashnext` | 3-bit copies, SSD tier, logs |
 | `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v2` | Engine image tag |
@@ -240,6 +241,8 @@ Put overrides in `.env` (see `.env.example`).
 - `tools/download.sh`: Hibana's own preflight fetches the pinned checkpoint and 3-bit copies for every profile, then
   the distilled draft head (with `TUNING=v1.1`), checked against pinned SHA-256 hashes.
 - `tools/serve.sh`: maps the settings above to `hibana serve flashnext`.
+- `tools/health.sh`: the healthcheck. If Hibana's engine fails (it then answers 503 while the web server stays up), it
+  stops the server so the container exits and `RESTART=unless-stopped` restarts it, about 70 s to serving again.
 - `tools/check.py`: standard library only. `--needle 32000 131072` adds long-context retrieval.
 - `docs/optimization-notes.md`: every change we measured, what we kept, what we rejected and why, with the numbers.
 

@@ -37,6 +37,7 @@ services:
     <<: *image
     entrypoint: ["bash", "/serve.sh"]
     container_name: hibana-flashnext-vision
+    # unless-stopped: come back after a reboot or a failed engine (tools/health.sh).
     restart: ${RESTART:-no}
     depends_on:
       download:
@@ -74,12 +75,15 @@ services:
       HIBANA_DRAFT_VOCAB: ${DRAFT_VOCAB:-}
     volumes:
       - ./tools/serve.sh:/serve.sh:ro
+      - ./tools/health.sh:/health.sh:ro
       - ${HF_CACHE:-~/.cache/huggingface}:/hf:ro
       - ${DATA_DIR:-~/.cache/hibana-flashnext}:/data
       # First-use GB10 kernel builds (torch extensions, FlashInfer JIT, Triton): about 2.5 min once.
       - ${KERNEL_CACHE:-~/.cache/hibana-flashnext/kernels}:/root/.cache
+    # Unhealthy on timeouts; on HTTP 503 (a failed engine) health.sh stops the server so the container exits and
+    # RESTART=unless-stopped restarts it. Docker does not restart a container for being unhealthy.
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1:${PORT:-8888}/health"]
+      test: ["CMD", "bash", "/health.sh"]
       interval: 15s
       timeout: 5s
       retries: 5
