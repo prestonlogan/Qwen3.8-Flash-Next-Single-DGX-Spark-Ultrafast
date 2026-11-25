@@ -35,10 +35,11 @@ RUN git apply /opt/patches/0002-flashnext-vision.patch \
     && git apply /opt/patches/0003-vision-speculation-graphs.patch \
     && grep -q 'class QwenVision' hibana/model/flashnext/vision.py \
     && grep -q 'HIBANA_VISION_GRAPHS' hibana/engine/config.py
-# 0004 (v1.1.0): repetition guard and late </think> ramp, distilled MTP draft head with 3-bit experts, GB10 kernels
+# 0004 (v1.1.0, fixed in v1.1.1): repetition guard and late </think> ramp, distilled MTP draft head with 3-bit experts, GB10 kernels
 #       (HyperConnection mix, split-K sparse attention, 3-bit GEMM geometry), route renormalization, prefill warmup.
 #       The opt-in parts are switched on by compose.yaml; see the patch header.
 RUN git apply /opt/patches/0004-v1.1-exact-speed-stack.patch \
+    && ! grep -q 'if batch.eager:' hibana/engine/spec.py \
     && grep -q '_tail_periodic' hibana/engine/think_guard.py \
     && grep -q 'HIBANA_MTP_W3_EXPERTS_PATH' hibana/model/flashnext/mtp.py \
     && grep -q '_sparse_gqa_splitk_kernel' hibana/kernels/qsa/attention.py \
