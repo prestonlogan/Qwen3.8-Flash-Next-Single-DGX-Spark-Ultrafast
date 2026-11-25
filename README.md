@@ -24,7 +24,8 @@ port 8888, thinking and tool calls included.
 > **v1.1.1:** fixes an engine crash in v1.1.0. A sampled request (temperature above 0) whose round was checked without
 > CUDA graphs, such as one with an image, could stop the engine with `NameError: name 'batch' is not defined`; after
 > that, chat requests returned 503. Thanks to dengfa.cheng for the report. Upgrade with
-> `git pull && docker compose up -d --build --wait`.
+> `git pull && docker compose up -d --build --wait`. Serving mostly non-English text? Set `DRAFT_VOCAB=0`; see
+> [Quality and limits](#quality-and-limits).
 
 > Built on [**dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark**](https://github.com/dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark)
 > by Peter Dedene, which did the Hibana Docker recipe, the tool-call fix and the speed and agent benchmarks below. This
@@ -235,7 +236,9 @@ Put overrides in `.env` (see `.env.example`).
   No video. One Spark only (no two-Spark tensor parallel with vision). Checked with our own text and image prompts
   (`tools/check.py` and a 22-prompt correctness set); no standard image benchmark (MMMU, ChartQA) has been run yet.
 - **Non-English text:** the draft-vocabulary shortlist lowers draft acceptance on scripts outside the common tokens.
-  Set `DRAFT_VOCAB=0` if most of your traffic is not English or code. Hibana leaves it off for this reason.
+  Set `DRAFT_VOCAB=0` if most of your traffic is not English or code. Hibana leaves it off for this reason. A user's
+  measurement on one Spark with `TUNING=v1.1`: Slovak decode 70.1 tok/s with the shortlist against 86.5 with
+  `DRAFT_VOCAB=0`, while English went 130.5 against 115.0.
 - Port 8888 is shared with other Spark recipes: stop the one that serves it first.
 - The API has no key check and listens on the LAN. Keep it there.
 - An omitted `temperature` means 1.0 with top_p 0.95 and top_k 20, the model's generation config.
