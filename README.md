@@ -242,9 +242,9 @@ Put overrides in `.env` (see `.env.example`).
   as TensorFold). Use `PROFILE=exact` when you need the model's exact outputs.
 - **Thinking quoted the closing tag.** Before v1.2.0's follow-up fix, a model that wrote or explained the literal
   `</think>` tag inside its reasoning ended the turn there: an empty answer or thinking cut in two. The engine now
-  masks that token inside thinking unless the previous token ends in a newline (the only place the template closes
-  thinking), and the parser ends reasoning on the token id, not the text. Forced closes (think guard, thinking
-  budget) are unchanged.
+  masks that token inside thinking unless the previous token ends in a newline outside an open code fence, inline
+  code span, or quote, and the parser ends reasoning on the token id, not the text. Forced closes (think guard,
+  thinking budget) are unchanged. Answers that must contain the literal tag can still drop or change it.
 - **v1.1.0 prefills more slowly.** At 2,048 tokens it prefilled at 3,434 (default) and 2,907 (exact) tok/s against
   3,786 for v1.0.0. Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s (about 10-35% longer
   across our runs); prompts already in the prefix cache are unaffected (0.18 s).
