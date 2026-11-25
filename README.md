@@ -15,7 +15,7 @@ Most Qwen3.8-Flash-Next recipes reach ~45–50 tok/s on a Spark (vLLM/SGLang/Ten
 and adds **image input** for Flash-Next, which upstream Hibana does not load. OpenAI- and Anthropic-compatible API on
 port 8888, thinking and tool calls included.
 
-> **v1.2.0:** target-guided long-context draft attention and automatic QSA prefill. On one Spark, same day and harness, realistic decode at 100K rose from 89.9 to 101.0 tok/s (four runs each) and at 250K from 74.4 to 100.4 tok/s. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with byte-identical output. Short context is unchanged within the measured run spread. It also removes invalid programmatic dependent launch instructions from the HyperConnection kernels, fixing an intermittent batch 4 startup freeze. Upgrade with `git pull && docker compose up -d --build --wait`.
+> **v1.2.0:** target-guided long-context draft attention and automatic QSA prefill. On one Spark, same day and harness, realistic decode at 100K rose from 89.9 to 101.0 tok/s (four runs each) and at 250K from 74.4 to 100.4 tok/s. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with byte-identical output. Short context is unchanged within the measured run spread. It also removes invalid programmatic dependent launch instructions from the HyperConnection kernels, fixing an intermittent batch 4 startup freeze, and fixes [#10](https://github.com/prestonlogan/Qwen3.8-Flash-Next-Single-DGX-Spark-Ultrafast/issues/10): quoting or explaining `</think>` inside the model's reasoning no longer ends the turn with an empty answer. Upgrade with `git pull && docker compose up -d --build --wait`.
 >
 > **v1.1.0:** a distilled draft head, a repetition guard and GB10 kernels, in two modes. The default
 > (`TUNING=v1.1`) is 28% faster on prose and 23% faster on code than v1.0.0 at temperature 0, and 12% faster across 30
@@ -164,6 +164,7 @@ Anthropic-style `image` blocks with a base64 source work too.
 | Draft vocabulary shortlist | off | on (98,304 rows) |
 | Distilled MTP draft head, 3-bit experts | no | **yes** (`patches/0004`, 1.2 GB download) |
 | Target-guided long-context draft attention | no | **yes** (`patches/0005`) |
+| Quoting `</think>` in reasoning does not end the turn | no | **yes** (`patches/0006`) |
 | Repetition guard and late `</think>` ramp | no | **yes** (`patches/0004`) |
 | GB10 kernels: HyperConnection mix, split-K sparse attention, 3-bit GEMM | no | **yes** (`patches/0004`) |
 | Tool-argument fix (`patches/0001`) | yes | yes (dedene's) |
@@ -189,7 +190,13 @@ Anthropic-style `image` blocks with a base64 source work too.
   realistic 100K decode rose from 89.9 to 101.0 tok/s and 250K from 74.4 to 100.4; fixed exact 100K copy rose from
   149.0 to 179.3 tok/s with byte-identical fixed prompts.
 
-All five patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
+- `patches/0006-think-close-token.patch` (v1.2.0): `</think>` is one ordinary token (id 248069), so a model that
+  quotes the tag in its reasoning used to close thinking there. Inside thinking the engine now masks that token unless
+  the previous token ends in a newline outside an open code fence, inline code span or quote, and masks the
+  end-of-turn tokens. The reasoning parser ends reasoning on the token id instead of the text. Exact-mode outputs are
+  unchanged.
+
+All six patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
 
 ## Settings
 
@@ -240,11 +247,12 @@ Put overrides in `.env` (see `.env.example`).
   `exact` (99 questions, p 0.51), with answers 18% longer. dedene's agent benchmark on `fast`: BFCL single-turn 87.2
   (TensorFold 85.8), AgentDojo tasks done under attack 77.5 (TensorFold 85.5), 1 of 200 injection attacks executed (same
   as TensorFold). Use `PROFILE=exact` when you need the model's exact outputs.
-- **Thinking quoted the closing tag.** Before v1.2.0's follow-up fix, a model that wrote or explained the literal
+- **Thinking quoted the closing tag.** Before v1.2.0 ([#10](https://github.com/prestonlogan/Qwen3.8-Flash-Next-Single-DGX-Spark-Ultrafast/issues/10)), a model that wrote or explained the literal
   `</think>` tag inside its reasoning ended the turn there: an empty answer or thinking cut in two. The engine now
   masks that token inside thinking unless the previous token ends in a newline outside an open code fence, inline
   code span, or quote, and the parser ends reasoning on the token id, not the text. Forced closes (think guard,
-  thinking budget) are unchanged. Answers that must contain the literal tag can still drop or change it.
+  thinking budget) are unchanged. Answers that must contain the literal tag can still drop or change it
+  ([#13](https://github.com/prestonlogan/Qwen3.8-Flash-Next-Single-DGX-Spark-Ultrafast/issues/13)); insert it on the client side if you need it exactly.
 - **v1.1.0 prefills more slowly.** At 2,048 tokens it prefilled at 3,434 (default) and 2,907 (exact) tok/s against
   3,786 for v1.0.0. Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s (about 10-35% longer
   across our runs); prompts already in the prefix cache are unaffected (0.18 s).
