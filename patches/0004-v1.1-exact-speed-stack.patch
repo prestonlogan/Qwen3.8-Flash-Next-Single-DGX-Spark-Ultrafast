@@ -16,6 +16,10 @@ Opt-in (off unless the environment variable is set):
   (HIBANA_ROUTE_PARSEVAL=1, HIBANA_ROUTE_CANDIDATES, HIBANA_ROUTE_BETA).
 - model/flashnext/model.py: HIBANA_W3_SKIP_REGEX keeps matching layers out of the 3-bit path.
 
+v1.1.1: engine/spec.py: the host-path </think> bias no longer reads an undefined `batch` (a NameError that stopped
+the engine on sampled rounds verified without the device acceptance graph). The bias is added once on every host
+path, and skipped when the sampled decision graph already added it.
+
 Always on (no change to outputs):
 - kernels/qsa/attention.py: split-K sparse attention for decode and verify rows (1-16 rows, 256+ selected keys).
 - kernels/csrc/w3_gemm.cu, kernels/w3.py: a 3-bit GEMM decode kernel with a tunable warps-per-CTA geometry and a
@@ -23,27 +27,6 @@ Always on (no change to outputs):
 - engine/spec.py: speculative-step results come back through a cached pinned host buffer.
 - engine/executor.py: startup warmup also prefills 2,048 and 4,096-token prompts (HIBANA_WARMUP_PREFILL_TOKENS,
   default 4096; 0 turns it off), so the first long prompt after boot pays less kernel JIT time.
-
-diff --git" line is ignored by git apply. Every change is off unless its environment variable is set; compose.yaml
-sets the v1.1.0 defaults.
-
-- engine/think_guard.py (new), engine/executor.py: repetition guard for thinking, prose and code. It stops a
-  generation only on a real loop (periodic repeats with at least 64 tokens of span, low n-gram novelty over long
-  windows) and is code-fence and tool-call aware. HIBANA_THINK_GUARD=1; thresholds HIBANA_TG_*.
-- engine/spec.py, engine/accept_graphs.py: a soft </think> bias that rises late in the thinking budget (a gentle
-  ramp, then a firm one by 70% of max_tokens), so long reasoning closes at a paragraph boundary and still answers.
-  HIBANA_THINK_SOFT_*. It adds nothing to the logits before the ramp starts.
-- model/flashnext/mtp.py: load a distilled MTP draft head (HIBANA_MTP_WEIGHTS) and its 512 routed experts packed to
-  3-bit (HIBANA_MTP_W3_EXPERTS, HIBANA_MTP_W3_EXPERTS_PATH). The draft head only proposes tokens; with exact
-  acceptance the output distribution is the target model's.
-- model/flashnext/hyper.py, kernels/hyper_mix_cuda.py, kernels/csrc/hyper_mix_{cuda,tc}.cu: fused GB10 (sm_121)
-  HyperConnection mix kernels, hoisted FP8 for 1-4 rows and BF16 tensor cores for 5-16 rows. HIBANA_HYPER_MIX_CUDA.
-- kernels/flashnext_fused.py, kernels/w3.py, kernels/csrc/w3_gemm.cu: route-budget renormalization by the full top-K
-  mass with James-Stein shrinkage (HIBANA_ROUTE_PARSEVAL, HIBANA_ROUTE_CANDIDATES, HIBANA_ROUTE_BETA), a 3-bit
-  expert GEMM CTA geometry for decode, and pinned device-to-host copies.
-- kernels/qsa/attention.py: split-K sparse attention for decode.
-- model/flashnext/model.py: prefill warmup up to HIBANA_WARMUP_PREFILL_TOKENS, so the first long prompt after boot
-  does not pay the kernel JIT cost; HIBANA_W3_SKIP_REGEX keeps matching layers out of the 3-bit path.
 
 diff --git a/hibana/engine/accept_graphs.py b/hibana/engine/accept_graphs.py
 index b3c7b1c..e658376 100644
@@ -122,7 +105,7 @@ index 636a317..bdd0080 100644
              self.flush_cache()  # sixteen live warmup rows need every state slot the plan guarantees
          if self.spec is not None:
 diff --git a/hibana/engine/spec.py b/hibana/engine/spec.py
-index c4c369f..a352b74 100644
+index c4c369f..a42a95d 100644
 --- a/hibana/engine/spec.py
 +++ b/hibana/engine/spec.py
 @@ -6,11 +6,29 @@ this driver owns target verify buffers, graph replay and acceptance metrics.
@@ -155,7 +138,47 @@ index c4c369f..a352b74 100644
  from hibana.engine.context import ForwardContext
  from hibana.engine.request import Request
  from hibana.engine.contracts import Proposer, StepInputs, VerifiedFeatures
-@@ -628,7 +646,7 @@ class SpecDecoder:
+@@ -478,6 +496,7 @@ class SpecDecoder:
+                 # The masked argmax, written into the graph's own buffer: the device acceptance graph reads it there
+                 # (and the masked logits for the relaxed rule). Sampled batches read the masked logits themselves.
+                 z_flat.copy_(logits.argmax(-1))
++            think_biased = False
+             accept = getattr(graphs, "accept", None)
+             if accept is not None and self.device_accept and (accept.eligible_sampled(batch.requests, batch.proposal) if batch.sampled
+                                                               else accept.eligible(batch.requests)):
+@@ -485,12 +504,13 @@ class SpecDecoder:
+                     torch.cuda.synchronize()
+                 if accept.round(batch, batch.proposal.tokens, batch.started, batch.prepared):
+                     return  # else a sampled law wider than its candidates: the host path below
++                think_biased = batch.sampled  # the sampled decision graph already added the </think> bias to these logits
+             norm = norm_rows.view(b_sz, s_len, -1).clone() if self.proposer.requirements.features.final_norm else None
+             layers = {lid: value.view(b_sz, s_len, -1).clone() for lid, value in layers.items()} if layers else None
+             z = z_flat.view(b_sz, s_len, -1) if batch.sampled else z_flat.view(b_sz, s_len).clone()
+             relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                         self._cells(b_sz, s_len, k))
+-            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
++            self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed, think_bias=not think_biased)
+             return
+         ctx = self.context(batch, self._eager_wrapper())
+         self.finish(batch, self.ex.model.forward(batch.tokens, ctx))
+@@ -603,12 +623,13 @@ class SpecDecoder:
+                                                                     self._cells(b_sz, s_len, k))
+         self._accept_batch(batch, z, VerifiedFeatures(norm, layers), relaxed=relaxed)
+ 
+-    def _accept_batch(self, batch, z, features, relaxed=None):
++    def _accept_batch(self, batch, z, features, relaxed=None, think_bias=True):
+         self._accept(batch.requests, batch.proposal.tokens, z, features, batch.started, batch.prepared,
+-                     proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence)
++                     proposal=batch.proposal if batch.sampled else None, relaxed=relaxed, confidence=batch.proposal.confidence,
++                     think_bias=think_bias)
+ 
+     def _accept(self, reqs, y, z, features: VerifiedFeatures, t0, t1, *, proposal=None, relaxed=None, confidence=None,
+-                limits=None) -> None:
++                limits=None, think_bias=True) -> None:
+         if self.timing:
+             torch.cuda.synchronize()
+         t2 = time.perf_counter()
+@@ -628,7 +649,7 @@ class SpecDecoder:
              # did not rank first. Downloaded with everything else, one sync.
              flags_t = (prefix.bool() & ~exact) if relaxed is not None else torch.zeros_like(exact)
              self.waiting()
@@ -164,11 +187,11 @@ index c4c369f..a352b74 100644
              y_l = [row[:k] for row in packed]
              z_l = [row[k:2 * k + 1] for row in packed]
              acc = [row[2 * k + 1] for row in packed]
-@@ -642,6 +660,12 @@ class SpecDecoder:
+@@ -642,6 +663,12 @@ class SpecDecoder:
              # laws wider than the candidates, verify row by row (`verify_rows`).
              acc_rows, corr_rows, target_rows, flag_rows = [], [], [], []
              batched = None
-+            if batch.eager:
++            if think_bias:  # host path: add the </think> bias unless the device decision graph already did
 +                with torch.inference_mode():
 +                    for _i, _req in enumerate(reqs):
 +                        _tb = _think_close_bias(_req)
@@ -177,7 +200,7 @@ index c4c369f..a352b74 100644
              if (proposal.probabilities is None) == (proposal.support is None):  # point masses, or a sparse law on its support
                  batched = verify_batch(y, z, [r.params for r in reqs], [r.generator for r in reqs], proposal.probabilities, proposal.support,
                                         rng=[[r.rng_seed, o] for r, o in zip(reqs, sampling_rng.offsets(reqs, sampling_rng.VERIFY))])
-@@ -671,8 +695,8 @@ class SpecDecoder:
+@@ -671,8 +698,8 @@ class SpecDecoder:
                      corr_rows.append(c_t)
                      flag_rows.append(rx_t.to(torch.int64))
                      target_rows.append(torch.full((s_len,), -1, dtype=y.dtype, device=y.device).index_put_((a_t.reshape(1),), c_t.reshape(1)))
@@ -188,7 +211,7 @@ index c4c369f..a352b74 100644
              y_l = [row[:k] for row in packed]
              acc = [row[k] for row in packed]
              # Sampled rows carry only their correction at index a (-1 elsewhere).
-@@ -721,6 +745,8 @@ class SpecDecoder:
+@@ -721,6 +748,8 @@ class SpecDecoder:
                  ex.state.commit(r, count, ssm=self.inter_ssm_all[:, i, count - 1],
                                  conv=self.conv_windows_all[:, i, count - 1],
                                  aux={name: win[i, count - 1] for name, win in self.aux_windows.items()})

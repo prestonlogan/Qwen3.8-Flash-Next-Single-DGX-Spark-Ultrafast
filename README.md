@@ -20,6 +20,11 @@ port 8888, thinking and tool calls included.
 > sampled agent sessions with no looping run (v1.0.0: 2 of 30). `TUNING=v1.1-exact` keeps drafting from changing what
 > the model says and scores higher on tool-eval-bench (93 against 89), at about v1.0.0's sampled speed. See
 > [v1.0.0 vs v1.1.0](#v100-vs-v110).
+>
+> **v1.1.1:** fixes an engine crash in v1.1.0. A sampled request (temperature above 0) whose round was checked without
+> CUDA graphs, such as one with an image, could stop the engine with `NameError: name 'batch' is not defined`; after
+> that, chat requests returned 503. Thanks to dengfa.cheng for the report. Upgrade with
+> `git pull && docker compose up -d --build --wait`.
 
 > Built on [**dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark**](https://github.com/dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark)
 > by Peter Dedene, which did the Hibana Docker recipe, the tool-call fix and the speed and agent benchmarks below. This
