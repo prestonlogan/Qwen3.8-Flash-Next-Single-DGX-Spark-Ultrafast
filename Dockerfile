@@ -1,4 +1,4 @@
-# Hibana at a pinned commit plus this recipe's patches (patches/0001-0005), with its locked GB10 environment (uv.lock: torch 2.13 cu130, FlashInfer 0.6.17, Triton).
+# Hibana at a pinned commit plus this recipe's patches (patches/0001-0006), with its locked GB10 environment (uv.lock: torch 2.13 cu130, FlashInfer 0.6.17, Triton).
 # Hibana runs on the host with uv by default; this puts the same `uv sync` in an image. The CUDA 13 devel base gives
 # the /usr/local/cuda/bin/nvcc that Hibana's preflight wants and its first-use kernel builds need.
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
@@ -47,6 +47,12 @@ RUN git apply /opt/patches/0004-v1.1-exact-speed-stack.patch \
     && grep -q 'mtp_qsa_guide' hibana/engine/config.py \
     && grep -q 'QSA_GUIDE' hibana/model/flashnext/attention.py \
     && grep -q '_capture_qsa_guide' hibana/proposers/mtp.py \
+    && .venv/bin/python -m compileall -q hibana
+# 0006: </think> closes thinking only after a newline-ending token, and the parser ends reasoning on the token id.
+RUN git apply /opt/patches/0006-think-close-token.patch \
+    && grep -q 'think_close' hibana/engine/spec.py \
+    && grep -q 'def feed(self, delta: str, marks' hibana/api/parsers/reasoning.py \
+    && ! grep -q 'text.find(THINK_END)' hibana/api/parsers/reasoning.py \
     && .venv/bin/python -m compileall -q hibana
 
 ENV PATH=/opt/hibana/.venv/bin:/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda TRITON_CACHE_DIR=/root/.cache/triton

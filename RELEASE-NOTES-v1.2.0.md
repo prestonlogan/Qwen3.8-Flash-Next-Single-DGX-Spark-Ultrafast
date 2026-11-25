@@ -9,6 +9,7 @@ Validated on one DGX Spark on 2026-11-25. This release adds target-guided long-c
 - `HIBANA_QSA_PREFILL_BACKEND=auto` is set in the v1.1 serve settings.
 - The HyperConnection tensor-core kernel no longer contains programmatic dependent launch instructions that the host never launched correctly. This fixes the intermittent batch 4 verify capture freeze.
 - Patch 0004 includes the v1.1.1 `think_bias` fix and the Dockerfile guard against `if batch.eager:`.
+- Patch 0006 fixes issue #10: inside thinking, the engine masks the `</think>` token unless the previous token ends in a newline, and the parser ends reasoning on the token id instead of the text, so quoting or explaining the tag no longer ends the turn.
 
 ## Measured results
 
@@ -81,7 +82,7 @@ Medians of 3 runs. The 32K prefill was 9.0 percent faster. The 2K result was fla
 git pull && docker compose up -d --build --wait
 ```
 
-The image is `hibana-flashnext-vision:d474b74d-v6`.
+The image is `hibana-flashnext-vision:d474b74d-v7`.
 
 ## Rollback
 

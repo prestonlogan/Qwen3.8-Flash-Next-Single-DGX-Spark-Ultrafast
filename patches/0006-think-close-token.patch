@@ -1,0 +1,464 @@
+diff --git a/hibana/engine/think_close.py b/hibana/engine/think_close.py
+new file mode 100644
+index 0000000..31fdf84
+--- /dev/null
++++ b/hibana/engine/think_close.py
+@@ -0,0 +1,194 @@
++"""Mask the thinking-close token except where a real close can happen.
++
++The checkpoint's </think> is one ordinary added token, so a model that quotes
++or explains the tag inside reasoning emits it mid-sentence and the turn ends
++with an empty answer or thinking cut in two. While a request is inside thinking
++the close id is masked wherever a token is chosen, unless the previous token's
++text ends in a newline: the chat template closes thinking as "\\n</think>\\n\\n".
++Forced closes (think_guard's budget and repetition rewrites) bypass sampling and
++are unaffected. The parser ends reasoning on the token id, not the text
++"</think>", so a tag spelled with ordinary tokens stays inside reasoning.
++"""
++from __future__ import annotations
++
++import torch
++
++from hibana.engine.think_guard import _CLOSE_ID as CLOSE_ID, _OPEN_ID as OPEN_ID
++
++# The turn-ending stop tokens (im_end, endoftext): never legal inside thinking.
++# Masking only the close id routes quote-intent into EOS, which the think
++# guard's premature-EOS rescue then converts into a forced early close.
++EOS_IDS = (248046, 248044)
++
++
++def install(ex, tok) -> None:
++    """Attach the ends-in-newline and fence-count tables plus a decode fn to the
++    executor (`ex`). `tok` is the api SnapshotTokenizer."""
++    vocab = tok._tok.get_vocab(with_added_tokens=True)
++    size = max(vocab.values()) + 1
++    table = torch.zeros(size, dtype=torch.bool)
++    global _FENCE_HOST, _BT_HOST, _DQ_HOST
++    _FENCE_HOST = [0] * size
++    _BT_HOST = [(0, 0, 0)] * size  # (has newline, backticks in whole token, backticks after its last newline)
++    _DQ_HOST = [(0, 0, 0)] * size  # same for double quotes
++    fence = torch.zeros(size, dtype=torch.int32)
++    bt = torch.zeros(size, dtype=torch.int32)
++    dq = torch.zeros(size, dtype=torch.int32)
++    for surface, i in vocab.items():
++        if surface.endswith("Ċ") or surface.endswith("\n"):
++            table[i] = True
++        n = surface.count("```")
++        if n:
++            _FENCE_HOST[i] = n
++            fence[i] = n
++        nl_at = max(surface.rfind("Ċ"), surface.rfind("\n"))
++        tail = surface[nl_at + 1:] if nl_at >= 0 else surface
++        if "`" in surface:
++            _BT_HOST[i] = (1 if nl_at >= 0 else 0, surface.count("`"), tail.count("`"))
++            bt[i] = surface.count("`")
++        if '"' in surface:
++            _DQ_HOST[i] = (1 if nl_at >= 0 else 0, surface.count('"'), tail.count('"'))
++            dq[i] = surface.count('"')
++    ex._think_nl = table.to(ex.device)
++    ex._think_fence = fence.to(ex.device)
++    ex._think_bt = bt.to(ex.device)
++    ex._think_dq = dq.to(ex.device)
++    ex._think_decode = lambda ids: tok.decode(ids, skip_special_tokens=True)
++
++
++_FENCE_HOST: list[int] = []  # "```" count per token id, set by install
++_BT_HOST: list[tuple[int, int, int]] = []  # (has newline, ` count, ` count after last newline) per token
++_DQ_HOST: list[tuple[int, int, int]] = []  # same for double quotes
++
++
++def think_open(r, decode=None) -> bool:
++    """Whether request r is still inside its thinking block (cached on r)."""
++    st = getattr(r, "_think_open", None)
++    if st is None:
++        st = _detect(r, decode)
++        r._think_open = st
++    return st
++
++
++def _detect(r, decode) -> bool:
++    prompt = getattr(r, "prompt_ids", None) or ()
++    tail = prompt[-32:]
++    last_open = last_close = -1
++    for i, t in enumerate(tail):
++        if t == OPEN_ID:
++            last_open = i
++        elif t == CLOSE_ID:
++            last_close = i
++    if last_open > last_close:
++        return True
++    out = getattr(r, "output_ids", ())
++    if not out:
++        return False
++    if decode is not None:
++        return decode(list(out[:8])).startswith("<think>")
++    return out[0] == OPEN_ID
++
++
++def note(r, token: int) -> None:
++    """Track thinking state from each emitted token (Request.push)."""
++    if token == CLOSE_ID:
++        r._think_open = False
++    elif token == OPEN_ID and len(getattr(r, "output_ids", ())) <= 1:
++        r._think_open = True
++    if _FENCE_HOST and token < len(_FENCE_HOST) and _FENCE_HOST[token]:
++        r._fence_par = (getattr(r, "_fence_par", 0) + _FENCE_HOST[token]) & 1
++    # Inline code span and quote parity on the current line: a token with a
++    # newline starts a new line at its tail, else counts accumulate.
++    if _BT_HOST and token < len(_BT_HOST):
++        nl, full, tail = _BT_HOST[token]
++        r._line_bt = (tail if nl else getattr(r, "_line_bt", 0) + full) & 1
++        nl, full, tail = _DQ_HOST[token]
++        r._line_dq = (tail if nl else getattr(r, "_line_dq", 0) + full) & 1
++
++
++def fence_par(r) -> int:
++    """Whether the reasoning text so far has an odd count of ``` fences."""
++    return getattr(r, "_fence_par", 0)
++
++
++def line_state(r) -> tuple[int, int]:
++    """Backtick and double-quote parity on the request's current line."""
++    return getattr(r, "_line_bt", 0), getattr(r, "_line_dq", 0)
++
++
++def _flags(requests, decode) -> list[bool] | None:
++    flags = [think_open(r, decode) for r in requests]
++    return flags if any(flags) else None
++
++
++def verify(logits, requests, drafts, prev, nl, decode=None, fence=None, bt=None, dq=None) -> bool:
++    """Mask CLOSE_ID in verify logits [b * s, V] where a real close cannot
++    happen. `drafts` [b, k] are the round's proposals (s = k + 1); `prev` [b * s]
++    is each row's input token, the token the row's prediction follows. Rows past
++    a drafted close are already out of thinking. A close is legal only after a
++    newline-ending token outside an open code fence. Returns True when applied."""
++    if nl is None or CLOSE_ID >= logits.shape[-1]:
++        return False
++    flags = _flags(requests, decode)
++    if flags is None:
++        return False
++    device = logits.device
++    committed = torch.tensor(flags, dtype=torch.bool, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++    saw = (drafts == CLOSE_ID).to(torch.int64).cumsum(1)  # [b, k] closes through each draft
++    before = torch.nn.functional.pad(saw, (1, 0))  # [b, k + 1]: closes in drafts[:, :j]
++    open_rows = committed.unsqueeze(1) & (before == 0)  # [b, s]
++    prev_t = prev.to(device, non_blocking=True) if prev.device != device else prev
++    legal = nl[prev_t]  # [b * s]: newline-ending previous token
++    if fence is not None:
++        parity = torch.tensor([fence_par(r) for r in requests], dtype=torch.int32,
++                              pin_memory=device.type == "cuda").to(device, non_blocking=True)
++        fc = fence[drafts].to(torch.int32).cumsum(1)  # [b, k] fence count through each draft
++        fc = torch.nn.functional.pad(fc, (1, 0))  # [b, k + 1]: count in drafts[:, :j]
++        inside = ((parity.unsqueeze(1) + fc) % 2).reshape(-1).bool()  # [b * s]
++        legal = legal & ~inside
++    if bt is not None and dq is not None:
++        # Backtick and double-quote parity on the current line: committed state
++        # plus a cumulative count over the drafts (newline resets inside the
++        # block are not re-tracked; the abuse line has none).
++        line_host = [[*line_state(r)] for r in requests]
++        lp = torch.tensor(line_host, dtype=torch.int32, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++        for bit, tab in ((0, bt), (1, dq)):
++            cc = tab[drafts].to(torch.int32).cumsum(1)
++            cc = torch.nn.functional.pad(cc, (1, 0))
++            odd = ((lp[:, bit].unsqueeze(1) + cc) % 2).reshape(-1).bool()
++            legal = legal & ~odd
++    cond = open_rows.reshape(-1) & ~legal
++    logits[:, CLOSE_ID].masked_fill_(cond, float("-inf"))
++    open_flat = open_rows.reshape(-1)
++    for eos in EOS_IDS:
++        if eos < logits.shape[-1]:
++            logits[:, eos].masked_fill_(open_flat, float("-inf"))
++    return True
++
++
++def sample(logits, requests, prev_ids, nl, decode=None, fence_par_flags=None) -> bool:
++    """Mask CLOSE_ID in logits [b, V] for one position per request; `prev_ids`
++    are the host-side tokens each prediction follows (last output or prompt id).
++    `fence_par_flags` are the requests' fence parities (1: inside an open fence)."""
++    if nl is None or CLOSE_ID >= logits.shape[-1]:
++        return False
++    flags = _flags(requests, decode)
++    if flags is None:
++        return False
++    device = logits.device
++    committed = torch.tensor(flags, dtype=torch.bool, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++    prev_t = torch.tensor(list(prev_ids), dtype=torch.int64, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++    legal = nl[prev_t]
++    if fence_par_flags is not None:
++        inside = torch.tensor(fence_par_flags, dtype=torch.bool, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++        legal = legal & ~inside
++    line_host = [[*line_state(r)] for r in requests]
++    if any(any(row) for row in line_host):
++        lp = torch.tensor(line_host, dtype=torch.bool, pin_memory=device.type == "cuda").to(device, non_blocking=True)
++        legal = legal & ~lp.any(1)
++    cond = committed & ~legal
++    logits[:, CLOSE_ID].masked_fill_(cond, float("-inf"))
++    for eos in EOS_IDS:
++        if eos < logits.shape[-1]:
++            logits[:, eos].masked_fill_(committed, float("-inf"))
++    return True
+diff --git a/hibana/engine/request.py b/hibana/engine/request.py
+index 236ee90..c039202 100644
+--- a/hibana/engine/request.py
++++ b/hibana/engine/request.py
+@@ -9,6 +9,7 @@ from enum import Enum
+ import torch
+ 
+ from hibana.engine.sampler import SamplingParams
++from hibana.engine import think_close
+ from hibana.cache.request_state import RequestState
+ 
+ 
+@@ -87,6 +88,7 @@ class Request(RequestState):
+             self.t_first_token = time.perf_counter()
+             self.state = State.RUNNING
+         self.output_ids.append(token)
++        think_close.note(self, token)
+         if self.grammar is not None and not self.grammar.accept(token):
+             self._finish("grammar")  # every path masks by the grammar, so this means a bug, not model output
+         elif not self.params.ignore_eos and token in self.params.stop_token_ids:
+diff --git a/hibana/engine/spec.py b/hibana/engine/spec.py
+index a42a95d..7516338 100644
+--- a/hibana/engine/spec.py
++++ b/hibana/engine/spec.py
+@@ -6,6 +6,7 @@ this driver owns target verify buffers, graph replay and acceptance metrics.
+ 
+ from __future__ import annotations
+ 
++from hibana.engine import think_close
+ from hibana.engine.think_guard import (
+     _CLOSE_ID as _TG_CLOSE_ID,
+     apply_think_guard as _apply_think_guard,
+@@ -464,9 +465,14 @@ class SpecDecoder:
+         n = b * width
+         y = batch.proposal.tokens
+         logits, z_flat = st["logits"], st["argmax"][:n]  # logits packed: [rows, V]
+-        if batch.sampled or any(r.grammar is not None for r in reqs):  # the rows they read, unpacked: [b * width, V]
+-            logits = logits.index_select(0, st["unpack"][:n])
+-            if self._constrain(batch, logits):
++        nl, decode = getattr(self.ex, "_think_nl", None), getattr(self.ex, "_think_decode", None)
++        think_active = nl is not None and any(think_close.think_open(r, decode) for r in reqs)
++        if batch.sampled or any(r.grammar is not None for r in reqs) or think_active:
++            logits = logits.index_select(0, st["unpack"][:n])  # the rows they read, unpacked: [b * width, V]
++            constrained = self._constrain(batch, logits)
++            prev = batch.tokens.index_select(0, st["unpack"][:n])
++            masked = think_close.verify(logits, reqs, batch.proposal.tokens, prev, nl, decode, fence=getattr(self.ex, "_think_fence", None), bt=getattr(self.ex, "_think_bt", None), dq=getattr(self.ex, "_think_dq", None))
++            if (constrained or masked) and not batch.sampled:
+                 z_flat = logits.argmax(-1)
+             cells = self._cells(b, width, y.shape[1])
+         norm = st["norm"][:n].view(b, width, -1).clone() if self.proposer.requirements.features.final_norm else None
+@@ -492,7 +498,10 @@ class SpecDecoder:
+                                                                batch.slots, batch.kv_pages, sampled=batch.sampled,
+                                                                side=(batch.requests, batch.proposal.tokens, seqs, batch.proposal.columns), variant=variant,
+                                                                rope=rope, compress=compress)
+-            if self._constrain(batch, logits) and not batch.sampled:
++            constrained = self._constrain(batch, logits)
++            think_masked = think_close.verify(logits, batch.requests, batch.proposal.tokens, batch.tokens,
++                                              getattr(self.ex, "_think_nl", None), getattr(self.ex, "_think_decode", None), fence=getattr(self.ex, "_think_fence", None), bt=getattr(self.ex, "_think_bt", None), dq=getattr(self.ex, "_think_dq", None))
++            if (constrained or think_masked) and not batch.sampled:
+                 # The masked argmax, written into the graph's own buffer: the device acceptance graph reads it there
+                 # (and the masked logits for the relaxed rule). Sampled batches read the masked logits themselves.
+                 z_flat.copy_(logits.argmax(-1))
+@@ -618,6 +627,8 @@ class SpecDecoder:
+         layers = {lid: value.view(b_sz, s_len, -1) for lid, value in out["features"].items()} if "features" in out else None
+         logits = self.ex.model.logits(out["norm"])
+         self._constrain(batch, logits)
++        think_close.verify(logits, batch.requests, batch.proposal.tokens, batch.tokens,
++                           getattr(self.ex, "_think_nl", None), getattr(self.ex, "_think_decode", None), fence=getattr(self.ex, "_think_fence", None), bt=getattr(self.ex, "_think_bt", None), dq=getattr(self.ex, "_think_dq", None))
+         z = logits.view(b_sz, s_len, -1) if batch.sampled else logits.argmax(-1).view(b_sz, s_len)
+         relaxed = None if batch.sampled else self._relaxed_matches(batch.requests, logits, batch.proposal.tokens,
+                                                                     self._cells(b_sz, s_len, k))
+diff --git a/hibana/engine/executor.py b/hibana/engine/executor.py
+index bdd0080..ab2737e 100644
+--- a/hibana/engine/executor.py
++++ b/hibana/engine/executor.py
+@@ -19,6 +19,7 @@ from hibana.engine.request import Request, State
+ from hibana.engine.grammar import sample_masks
+ from hibana.engine.media import Encoder, check as check_media, text_ids
+ from hibana.engine.sampling_rng import request_seed
++from hibana.engine import think_close
+ from hibana.engine.sampler import InvalidRequest, Sampler, SamplingParams
+ from hibana.cache.kv_pool import KV_DTYPE, KvPool
+ from hibana.cache.ledger import Ledger, after_plan_bytes
+@@ -724,6 +725,9 @@ class Executor:
+         if finishing:
+             logits = self.model.logits(out["norm"][[last_rows[i] for i in finishing]])
+             done = [chunks[i][0] for i in finishing]
++            think_close.sample(logits, done, [r.prefill_ids[-1] for r in done],
++                               getattr(self, "_think_nl", None), getattr(self, "_think_decode", None),
++                               fence_par_flags=[think_close.fence_par(r) for r in done])
+             tokens = self.sampler.sample(logits, [r.params for r in done], [r.generator for r in done],
+                                          sample_masks(done, logits.shape[-1])).tolist()
+         for req, n_new in chunks:
+@@ -764,6 +768,9 @@ class Executor:
+         token = None
+         if end == n:
+             logits = self.model.logits(out["norm"][-1:])
++            think_close.sample(logits, [req], [req.prefill_ids[-1]],
++                               getattr(self, "_think_nl", None), getattr(self, "_think_decode", None),
++                               fence_par_flags=[think_close.fence_par(req)])
+             token = int(self.sampler.sample(logits, [req.params], [req.generator], sample_masks([req], logits.shape[-1])).item())
+             if self.spec is not None and not self._image_spec_off(req):
+                 self.spec.start(req, token)
+@@ -906,6 +913,9 @@ class Executor:
+             out = self.model.forward(tokens, ctx)
+             debug_sync("after plain decode forward", reqs)
+             logits = self.model.logits(out["norm"])
++        think_close.sample(logits, reqs, [r.output_ids[-1] for r in reqs],
++                           getattr(self, "_think_nl", None), getattr(self, "_think_decode", None),
++                           fence_par_flags=[think_close.fence_par(r) for r in reqs])
+         next_tokens = self.sampler.sample(logits, [r.params for r in reqs], [r.generator for r in reqs],
+                                           sample_masks(reqs, logits.shape[-1])).tolist()
+         for i, (r, tok) in enumerate(zip(reqs, next_tokens)):
+diff --git a/hibana/api/parsers/reasoning.py b/hibana/api/parsers/reasoning.py
+index f211da2..ce14996 100644
+--- a/hibana/api/parsers/reasoning.py
++++ b/hibana/api/parsers/reasoning.py
+@@ -6,10 +6,16 @@ With thinking disabled the template already closed an empty block, so the
+ output is plain content. Both cases, and an explicit "<think>" at the start of
+ the output, are handled.
+ 
++The close is the real </think> token, not the text: the engine masks that token
++inside thinking unless the previous token ends in a newline, so a tag quoted or
++explained with ordinary tokens stays inside the reasoning. `feed` takes `marks`,
++the character offsets into `delta` where each real close token's "</think>"
++starts; only those offsets end the block.
++
+ With tools offered, a model can also write its tool call inside a reasoning
+ block it never closes, and end the turn there (Flash-Next, twice in
+ 308 Claude Code turns). Reasoning from a "<tool_call>" on is held back: a later
+-"</think>" releases it as reasoning (a call drafted while thinking), and if the
++real close releases it as reasoning (a call drafted while thinking), and if the
+ output ends first while it holds a complete call, it becomes content, where
+ the tool parser finds the call.
+ """
+@@ -31,22 +37,31 @@ class ReasoningParser:
+         self._pending = ""  # reasoning or content not emitted yet: a possible tag start, or a held tool call
+         self._seen_any = False
+ 
+-    def feed(self, delta: str) -> tuple[str, str]:
+-        """Returns (reasoning_delta, content_delta) for this piece of text."""
++    def feed(self, delta: str, marks: tuple[int, ...] = ()) -> tuple[str, str]:
++        """Returns (reasoning_delta, content_delta) for this piece of text.
++        `marks` are offsets into `delta` where a real </think> token's text
++        starts; a "</think>" spelled with other tokens does not close thinking."""
++        base = len(self._pending)
+         text = self._pending + delta
+         self._pending = ""
++        marks = [base + m for m in marks]
+         r_out, c_out = "", ""
+         if not self._seen_any and text:
+             self._seen_any = True
+             if text.startswith(THINK_START):
+                 self.in_reasoning = True
+                 text = text[len(THINK_START):]
++                marks = [m - len(THINK_START) for m in marks]
+             elif THINK_START.startswith(text):
+                 self._pending = text
+                 return "", ""
+         while text:
+             if self.in_reasoning:
+-                idx = text.find(THINK_END)
++                idx = -1
++                for m in marks:
++                    if 0 <= m and text.startswith(THINK_END, m):
++                        idx = m
++                        break
+                 if idx >= 0:
+                     r_out += text[:idx]
+                     text = text[idx + len(THINK_END):]
+@@ -54,8 +69,7 @@ class ReasoningParser:
+                     continue
+                 hold = text.find(TOOL_START) if self.tools else -1
+                 if hold < 0:
+-                    hold = len(text) - max(_partial_suffix(text, THINK_END),
+-                                           _partial_suffix(text, TOOL_START) if self.tools else 0)
++                    hold = len(text) - (_partial_suffix(text, TOOL_START) if self.tools else 0)
+                 r_out += text[:hold]
+                 self._pending = text[hold:]
+                 text = ""
+diff --git a/hibana/api/server.py b/hibana/api/server.py
+index ef4f9df..c463dd4 100644
+--- a/hibana/api/server.py
++++ b/hibana/api/server.py
+@@ -35,6 +35,7 @@ from hibana.api.parsers.reasoning import ReasoningParser
+ from hibana.api.parsers.tools import TOOL_CALL_START, has_tool_call, parse_tool_calls
+ from hibana.api.validation import _output_spec, _sampling_from, _stops, _template_kwargs
+ from hibana.engine.loop import EngineUnavailable, Ticket, EngineLoop
++from hibana.engine import think_close
+ from hibana.engine.grammar import Grammars
+ from hibana.engine.sampler import InvalidRequest
+ from hibana.engine.scheduler import QueueFull, Scheduler
+@@ -197,11 +198,13 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
+             if reason == "error":
+                 raise EngineUnavailable("engine unavailable")
+             out += new
++            read = detok._read
+             delta_text = detok.update(out)
++            marks = _think_marks(tok, out[read:detok._read]) if delta_text else ()
+             if detok.stopped:
+                 engine.cancel(ticket)
+                 finished, reason = True, "stop"
+-            r_delta, c_delta = rp.feed(delta_text)
++            r_delta, c_delta = rp.feed(delta_text, marks)
+             if finished:
+                 r2, c2 = rp.finish()
+                 r_delta += r2
+@@ -469,7 +472,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
+             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
+ 
+         out, text, reason = await _collect(ticket, Detokenizer(tok, stop), http)
+-        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
++        reasoning, content, calls = _split_chat(text, _think_marks(tok, out), in_reasoning, tools)
+         message: dict[str, Any] = {"role": "assistant", "content": content if content or not calls else None}
+         if reasoning:
+             message["reasoning_content"] = reasoning
+@@ -509,7 +512,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
+         results = await asyncio.gather(*[_collect(t, Detokenizer(tok, stop), http) for t in tickets])
+         choices, completion, reasoning_total = [], 0, 0
+         for i, (out, text, reason) in enumerate(results):
+-            reasoning, content, calls = _split_chat(text, in_reasoning, tools)
++            reasoning, content, calls = _split_chat(text, _think_marks(tok, out), in_reasoning, tools)
+             message: dict[str, Any] = {"role": "assistant", "content": content if content or not calls else None}
+             if reasoning:
+                 message["reasoning_content"] = reasoning
+@@ -634,7 +637,7 @@ def create_app(engine: EngineLoop, tok: SnapshotTokenizer, tmpl: ChatTemplate, d
+             return StreamingResponse(_stream(events(), ticket), media_type="text/event-stream")
+ 
+         out, text, reason = await _collect(ticket, detok, http)
+-        reasoning, content, calls = _split_chat(text, in_reasoning, tools)
++        reasoning, content, calls = _split_chat(text, _think_marks(tok, out), in_reasoning, tools)
+         stop_reason, stop_sequence = messages_api.stop_reason("tool_calls" if calls else reason, detok.stop_hit)
+         return {"id": mid, "type": "message", "role": "assistant", "model": model,
+                 "content": messages_api.content_blocks(reasoning, content, calls),
+@@ -762,10 +765,19 @@ def _tool_arguments_as_objects(messages: list[dict]) -> list[dict]:
+     return out
+ 
+ 
+-def _split_chat(text: str, in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
++def _think_marks(tok, ids: list[int]) -> tuple[int, ...]:
++    """Char offsets into these ids' decoded text where each real </think> token starts."""
++    marks = []
++    for i, t in enumerate(ids):
++        if t == think_close.CLOSE_ID:
++            marks.append(len(tok.decode(ids[:i], skip_special_tokens=True)))
++    return tuple(marks)
++
++
++def _split_chat(text: str, marks: tuple[int, ...], in_reasoning: bool, tools: list | None) -> tuple[str, str, list[dict]]:
+     """Complete chat output as (reasoning, content, tool_calls)."""
+     rp = ReasoningParser(in_reasoning, tools=bool(tools))
+-    rp.feed(text)
++    rp.feed(text, marks)
+     rp.finish()
+     content, calls = (parse_tool_calls(rp.content, tools) if tools else (rp.content, []))
+     return rp.reasoning, content, calls
+@@ -835,6 +847,7 @@ def serve(host: str, port: int, log=print, spec: int = 0, proposer: str = "mtp",
+         log(f"  context length {max_context} -> {pool_tokens}: HIBANA_KV_POOL_TOKENS fixes a smaller KV pool")
+         max_context = pool_tokens
+     ex = Executor(model, log=log, spec_config=spec_config, max_context=max_context, max_batch=max_batch, num_pages=pool_tokens)
++    think_close.install(ex, tok)
+     ex.capture_graphs(log=log)
+     ex.warmup(log=log)
+     ex.enable_ssd_tier(log=log)
