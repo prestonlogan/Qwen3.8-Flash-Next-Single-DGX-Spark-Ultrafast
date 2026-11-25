@@ -78,14 +78,14 @@ The image is `hibana-flashnext-vision:d474b74d-v6`.
 
 ## Rollback
 
-Return to the v1.1.1-equivalent configuration:
+Return to the v1.1.1 release:
 
 ```bash
-cd /home/plogan/experiments/hibana-flashnext-fast
-cp -p vision-enabled.yml.t94-rc-clean-20261123 vision-enabled.yml
-rm -f speed-trial.yml
-curl -s http://127.0.0.1:30002/unload
+git checkout v1.1.1
+docker compose up -d --build --wait
 ```
+
+v1.1.1 still has the old HyperConnection PDL instructions. It can freeze during batch 4 verify capture on some boots. If it does, use the v1.2.0 image with `MTP_QSA_GUIDE=0` and `QSA_PREFILL_BACKEND=original` as the v1.1.1-equivalent fallback.
 
 ## Known caveats
 
