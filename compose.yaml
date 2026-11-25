@@ -4,7 +4,7 @@
 name: hibana-flashnext-vision
 
 x-image: &image
-  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v5}
+  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v6}
   build:
     context: .
     args:

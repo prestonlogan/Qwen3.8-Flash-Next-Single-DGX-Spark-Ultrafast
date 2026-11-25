@@ -12,12 +12,13 @@ including the ones we threw away, so you don't have to repeat them.
 > exact acceptance. Results: [bench/ab-20261124](../bench/ab-20261124/README.md).
 
 
-> **v1.2.0 release candidate (2026-11-24).** Patch 0005 guides long-context MTP draft attention with the target
+> **v1.2.0 (2026-11-25).** Patch 0005 guides long-context MTP draft attention with the target
 > model's verify-time sparse attention page selection. It keeps 14,336 recent pages plus 2,048 selected distant
-> pages after 65,536 tokens. Controlled results: fixed exact 100K copy effective throughput 200.0 versus 168.0 tok/s,
-> batch-2 fixed live throughput 256.7 versus 196.0, and realistic 100K decode 101.0 versus 82.4. Exact output stayed
-> byte-identical. Needle and RULER long-context screens passed. A simpler fixed 16K draft window was rejected because
-> lower draft time did not make up for lower acceptance.
+> pages after 65,536 tokens. Same-day controlled results: fixed exact 100K copy effective throughput 179.3 versus
+> 149.0 tok/s, realistic 100K decode 101.0 versus 89.9, and 250K decode 100.4 versus 74.4. Exact fixed prompts stayed
+> byte-identical. The 131K RULER five-task subset averaged 90.5 versus 90.1, and variable tracking over 10 samples
+> averaged 86.0 versus 84.0. A simpler fixed 16K draft window was rejected because lower draft time did not make up
+> for lower acceptance.
 
 Back to the [README](../README.md).
 

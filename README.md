@@ -15,7 +15,7 @@ Most Qwen3.8-Flash-Next recipes reach ~45–50 tok/s on a Spark (vLLM/SGLang/Ten
 and adds **image input** for Flash-Next, which upstream Hibana does not load. OpenAI- and Anthropic-compatible API on
 port 8888, thinking and tool calls included.
 
-> **v1.2.0 release candidate:** patch 0005 guides long-context MTP draft attention with the target model's own sparse attention page selection. In controlled same-image tests, realistic 100K decode rose from 82.4 to 101.0 tok/s, fixed exact output stayed byte-identical, and long-context quality screens passed. The candidate also removes invalid programmatic dependent launch instructions from the HyperConnection tensor-core kernels, fixing an intermittent batch 4 verify startup deadlock.
+> **v1.2.0:** target-guided long-context draft attention and automatic QSA prefill. On one Spark, same day and harness, realistic decode at 100K rose from 89.9 to 101.0 tok/s (four runs each) and at 250K from 74.4 to 100.4 tok/s. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with byte-identical output. Short context is unchanged within the measured run spread. It also removes invalid programmatic dependent launch instructions from the HyperConnection kernels, fixing an intermittent batch 4 startup freeze. Upgrade with `git pull && docker compose up -d --build --wait`.
 >
 > **v1.1.0:** a distilled draft head, a repetition guard and GB10 kernels, in two modes. The default
 > (`TUNING=v1.1`) is 28% faster on prose and 23% faster on code than v1.0.0 at temperature 0, and 12% faster across 30
@@ -182,12 +182,12 @@ Anthropic-style `image` blocks with a base64 source work too.
   renormalization; and a 2K/4K-token prefill warmup at startup. The patch header lists which parts are always on
   (kernels, warmup) and which `TUNING=v1.1` and `v1.1-exact` switch on.
 
-- `patches/0005-qsa-guided-draft-attention.patch` (v1.2.0 release candidate): for text contexts over 65,536 tokens,
+- `patches/0005-qsa-guided-draft-attention.patch` (v1.2.0): for text contexts over 65,536 tokens,
   the draft keeps the most recent 14,336 KV pages plus 2,048 distant pages selected by the target model's own
   verify-time sparse attention at layer 43. This shortens long-context draft attention without changing the target
   model or exact verification. Image requests and budget speculation are excluded. In the controlled release test,
-  realistic 100K decode rose from 82.4 to 101.0 tok/s; fixed exact output stayed byte-identical, and batch-2 output
-  stayed identical.
+  realistic 100K decode rose from 89.9 to 101.0 tok/s and 250K from 74.4 to 100.4; fixed exact 100K copy rose from
+  149.0 to 179.3 tok/s with byte-identical fixed prompts.
 
 All five patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
 
@@ -218,7 +218,7 @@ Put overrides in `.env` (see `.env.example`).
 | `RESTART` | `no` | Docker restart policy. Set `unless-stopped` for a server that runs unattended: it restarts after a reboot and after an engine failure (see below) |
 | `HF_CACHE` | `~/.cache/huggingface` | Shared Hugging Face cache for the checkpoint |
 | `DATA_DIR` | `~/.cache/hibana-flashnext` | 3-bit copies, SSD tier, logs |
-| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v5` | Engine image tag |
+| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v6` | Engine image tag |
 
 ## Quality and limits
 
@@ -243,6 +243,9 @@ Put overrides in `.env` (see `.env.example`).
 - **v1.1.0 prefills more slowly.** At 2,048 tokens it prefilled at 3,434 (default) and 2,907 (exact) tok/s against
   3,786 for v1.0.0. Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s (about 10-35% longer
   across our runs); prompts already in the prefix cache are unaffected (0.18 s).
+- **v1.2.0 prefill:** median 2,048-token prefill was 3,004 tok/s against 2,985 for the v1.1.1-equivalent baseline,
+  effectively flat. A unique 32K prompt prefilled at 3,435 against 3,151 tok/s, 9.0 percent faster. At 63K it was
+  3,147 against 3,225 tok/s, 2.4 percent slower.
 - **The repetition guard ends a generation that is looping** (finish reason `stop`) instead of letting it run to
   `max_tokens`. Set `HIBANA_THINK_GUARD=0` to turn it off.
 - **Don't raise `HIBANA_ACCEPT_SOFT` above the default.** At 1.0–3.0 decoding is 20–60% faster, but in our tests long
@@ -267,11 +270,14 @@ v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Decode tok/s | 124.2 | 104.2 | 101.4 | 94.1 | 86.0 | 72.1 | 69.4 |
 | Time to first token, uncached | 1.0 s | 11.1 s | 22.5 s | 35.2 s | 53.5 s | 74.7 s | 86.6 s |
+| v1.2.0 decode tok/s | n/a | n/a | n/a | 101.0 | n/a | n/a | 100.4 |
+| v1.2.0 time to first token, uncached | n/a | n/a | n/a | 30.6 s | n/a | n/a | 80.0 s |
 
-- **v1.2.0 release candidate:** patch 0005 improves decode after 65K tokens. In the controlled same-image A/B,
-  realistic 100K decode rose from 82.4 to 101.0 tok/s. Exact fixed-prompt output stayed byte-identical, batch-2
-  output stayed identical, a 72K needle screen matched exactly, and a 131K RULER subset plus expanded variable
-  tracking showed no systematic quality loss.
+- **v1.2.0:** patch 0005 improves decode after 65K tokens. In the same-day controlled A/B, realistic 100K decode rose
+  from 89.9 to 101.0 tok/s and 250K from 74.4 to 100.4. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with
+  byte-identical fixed prompts. Batch 2 rose from 202.1 to 229.3 and 244.3 tok/s after a first-request warmup cost.
+  At 131K, the five-task RULER subset averaged 90.5 against 90.1, and variable tracking over 10 samples averaged 86.0
+  against 84.0.
 - **Decode holds up; prefill is the cost.** Decode is still near 70 tok/s with 250K tokens in context, but an uncached
   250K prompt waits about 87 s for its first token. Prompts already in the prefix cache skip that.
 - **RULER** (NVIDIA's 13 synthetic tasks, thinking off, temperature 0): average **96.3** at 32K, **94.0** at 64K and
