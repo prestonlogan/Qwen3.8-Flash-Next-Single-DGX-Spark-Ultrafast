@@ -1,0 +1,195 @@
+--- a/hibana/engine/config.py
++++ b/hibana/engine/config.py
+@@ -122,6 +122,11 @@
+     accept_default: str = "off"               # HIBANA_ACCEPT_DEFAULT: K:M for greedy requests that set neither field (off: exact)
+     accept_soft: float = 0.0                  # HIBANA_ACCEPT_SOFT: accept_soft s for sampled requests that do not set it (0: exact)
+     qsa_sparse_graphs: bool = True            # HIBANA_QSA_SPARSE_GRAPHS=0: rows past the indexer budget run eagerly
++    mtp_qsa_guide: bool = False               # HIBANA_MTP_QSA_GUIDE: guide long-context MTP draft attention with verify-time QSA page selection
++    qsa_guide_layer: int = 43                 # HIBANA_QSA_GUIDE_LAYER: the full-attention layer whose verify selection guides the draft
++    mtp_qsa_guide_local: int = 14336          # HIBANA_MTP_QSA_GUIDE_LOCAL: recent draft KV pages always kept with the guide
++    mtp_qsa_guide_width: int = 2048           # HIBANA_MTP_QSA_GUIDE_WIDTH: selected distant pages copied per request
++    mtp_qsa_guide_min_context: int = 65536    # HIBANA_MTP_QSA_GUIDE_MIN_CONTEXT: minimum context before guided drafting activates
+     qsa_prefill_backend: str = "original"    # HIBANA_QSA_PREFILL_BACKEND: original, auto, optimized (SM121 TP1/TP2, <=32K)
+     ple_resident: str = "auto"                 # HIBANA_PLE_RESIDENT: Flash-Next's PLE table in device memory, each tensor-parallel rank its share of the heads; auto: on two Sparks, 0: off
+     # --- the SSD tier (cache/ssd.py) under the GPU prefix cache
+@@ -156,5 +166,8 @@
+         if self.verify_attention not in ("auto", "fa2"):
+             raise ValueError(f"HIBANA_VERIFY_ATTENTION must be auto or fa2; got {self.verify_attention!r}")
++        if self.mtp_qsa_guide_width > 2048:
++            raise ValueError("HIBANA_MTP_QSA_GUIDE_WIDTH must be at most 2048, "
++                             f"the target sparse-attention selection width; got {self.mtp_qsa_guide_width}")
+         for name, v in (("HIBANA_MOE_KEEP", self.moe_keep), ("HIBANA_MOE_BUDGET", self.moe_budget)):
+             if v < 0:
+                 raise ValueError(f"{name}={v}: a count of experts, or 0 (off)")
+@@ -207,6 +212,11 @@
+             accept_default=e.get("HIBANA_ACCEPT_DEFAULT", "off"),
+             accept_soft=_accept_soft(e),
+             qsa_sparse_graphs=e.get("HIBANA_QSA_SPARSE_GRAPHS", "1") != "0",
++            mtp_qsa_guide=_flag(e, "HIBANA_MTP_QSA_GUIDE"),
++            qsa_guide_layer=_int(e, "HIBANA_QSA_GUIDE_LAYER", 43),
++            mtp_qsa_guide_local=_positive(e, "HIBANA_MTP_QSA_GUIDE_LOCAL", 14336),
++            mtp_qsa_guide_width=_positive(e, "HIBANA_MTP_QSA_GUIDE_WIDTH", 2048),
++            mtp_qsa_guide_min_context=_positive(e, "HIBANA_MTP_QSA_GUIDE_MIN_CONTEXT", 65536),
+             qsa_prefill_backend=_str(e, "HIBANA_QSA_PREFILL_BACKEND", "original"),
+             ple_resident=e.get("HIBANA_PLE_RESIDENT", "auto"),
+             ssd=_flag(e, "HIBANA_SSD"),
+--- a/hibana/model/flashnext/attention.py
++++ b/hibana/model/flashnext/attention.py
+@@ -8,6 +8,7 @@
+ 
+ import torch
+ 
++from hibana.engine.config import current
+ from hibana.kernels import ops
+ from hibana.model.attention import Attention
+ from hibana.model.flashnext.indexer import FlashNextIndexer
+@@ -16,6 +17,18 @@
+ from hibana.weights.sharding import REPLICATED, ROW_PARALLEL, ColumnParallel
+ 
+ 
++
++QSA_GUIDE = {}
++
++
++def stash_qsa_guide(layer_id: int, selected, steps: int) -> None:
++    cfg = current()
++    if selected is not None and steps and cfg.mtp_qsa_guide and layer_id == cfg.qsa_guide_layer:
++        rows = int(selected[0].shape[0])
++        if (rows, steps) not in QSA_GUIDE:
++            print(f"qsa guide stash layer {layer_id} rows {rows} steps {steps}", flush=True)
++        QSA_GUIDE[rows, steps] = selected
++
+ class FlashNextAttention(Attention):
+     def __init__(self, w, prefix: str, layer_id: int, device: torch.device, rope, ragged: ops.RaggedAttention, target, precision: str,
+                  sharded: bool = True):  # noqa: D107
+@@ -55,12 +68,14 @@
+             if side is None or side.qsa_members is None:
+                 return super().forward(x, ctx, x_q)
+             selected = self.indexer.replay(x, ctx, token_pages)
++            stash_qsa_guide(self.layer_id, selected, getattr(ctx, "verify_steps", 0))
+             if selected is None:  # every row inside the budget: dense attention
+                 return super().forward(x, ctx, x_q)
+             q, k, v, gate = self._qkv(x, ctx.rope())
+             return self._sparse(q, k, v, gate, selected, ctx, token_pages)
+         q, k, v, gate = self._qkv(x, ctx.rope())
+         selected = self.indexer.run(x, ctx, token_pages)
++        stash_qsa_guide(self.layer_id, selected, getattr(ctx, "verify_steps", 0))
+         if selected is None:  # every row sees at most the budget: the dense path is exact
+             if ctx.mode == "decode":
+                 ctx.kv_pool.write(self.layer_id, token_pages, k, v)
+--- a/hibana/proposers/mtp.py
++++ b/hibana/proposers/mtp.py
+@@ -8,6 +8,7 @@
+ from hibana.target import DEFAULT_TARGET
+ 
+ from hibana.engine.config import current
++from hibana.model.flashnext.attention import QSA_GUIDE
+ from hibana.engine.contracts import Capabilities, FeatureRequest, ProposerContext, ProposerRequirements
+ from hibana.engine.rejection import DraftColumns, Proposal
+ 
+@@ -18,6 +19,7 @@
+     last_hidden: torch.Tensor | None = None
+     pending_token: int | None = None
+     pending_hidden: torch.Tensor | None = None
++    qsa_guide_pages: torch.Tensor | None = None
+ 
+ 
+ def draft_argmax(head, hidden: torch.Tensor) -> torch.Tensor:
+@@ -107,6 +109,11 @@
+         self.with_confidence = current().trace_confidence
+         cfg = current()
+         self.sample = cfg.mtp_sample  # read once here: the draft graphs capture the candidates' outputs
++        self.qsa_guide = cfg.mtp_qsa_guide and cfg.spec_policy != "budget"
++        self.qsa_guide_local = cfg.mtp_qsa_guide_local
++        self.qsa_guide_width = cfg.mtp_qsa_guide_width
++        self.qsa_guide_min_context = cfg.mtp_qsa_guide_min_context
++        self._qsa_guide_logged = False
+         self.sample_width = CANDIDATES
+         self._rows = None  # a sampled round's `draft_rows`
+         self._fb = None  # device acceptance buffers (`_feedback_buffers`)
+@@ -222,7 +229,21 @@
+         drafts, confs = [], []
+         hidden, token = torch.cat(hids), inputs.tokens
+         for j in range(1, depth + 1):
+-            kv = [f[:r.context_len - 2 + j] for f, r in zip(full, requests)]
++            kv = []
++            for f, r in zip(full, requests):
++                attended = f[:r.context_len - 2 + j]
++                state = self._state(r)
++                guide = state.qsa_guide_pages
++                if (self.qsa_guide and guide is not None and not getattr(r, "media", None)
++                        and r.context_len > self.qsa_guide_min_context and attended.shape[0] > self.qsa_guide_local):
++                    recent = attended[-self.qsa_guide_local:]
++                    if guide.dtype != recent.dtype:
++                        guide = guide.to(recent.dtype)
++                    attended = torch.cat([guide, recent])
++                    if not self._qsa_guide_logged:
++                        print(f"qsa guide draft active width {int(guide.shape[0])}", flush=True)
++                        self._qsa_guide_logged = True
++                kv.append(attended)
+             hidden, token, conf, cand = self._step(token, hidden, positions[j - 1], step_pages[j - 1], kv, graphs, sampled, step=j - 1)
+             if sampled:
+                 token = self._draw(cand, requests, j - 1, laws, supports)
+@@ -295,10 +316,30 @@
+         for row, (req, tokens) in enumerate(zip(requests, emitted)):
+             self._accepted(req, tokens, features, row, device_tokens[offset:offset + len(tokens)])
+             offset += len(tokens)
++
++    def _capture_qsa_guide(self, req, features, row: int, count: int) -> None:
++        if not self.qsa_guide or getattr(req, "media", None) or req.context_len <= self.qsa_guide_min_context:
++            return
++        norm = features.norm
++        if norm is None or norm.ndim < 3:
++            return
++        batch, steps = int(norm.shape[0]), int(norm.shape[1])
++        need = batch * steps
++        candidates = [(rows, entry) for (rows, width), entry in QSA_GUIDE.items()
++                      if width == steps and rows >= need and rows % steps == 0]
++        if not candidates:
++            return
++        rows, entry = min(candidates, key=lambda item: item[0])
++        flat = row * steps + min(count - 1, steps - 1)
++        if flat >= entry[0].shape[0]:
++            return
++        state = self._state(req)
++        state.qsa_guide_pages = entry[0][flat, :self.qsa_guide_width].clone()
+ 
+     def _accepted(self, req, emitted, features, row, inputs):
+         state = self._state(req)
+         count = len(emitted)
++        self._capture_qsa_guide(req, features, row, count)
+         start, end = req.committed_len - count, req.committed_len
+         norm = features.norm[row, :count]
+         hidden = torch.cat([state.pending_hidden, norm[:count - 1]])
+@@ -319,7 +360,8 @@
+             b, w, d = self.context.max_batch, self.head.hidden_width, self.context.device
+             self._fb = {"pending": torch.zeros((b, w), dtype=torch.bfloat16, device=d),
+                         "rows": torch.zeros((b, self.k + 1, w), dtype=torch.bfloat16, device=d),
+-                        "last": torch.zeros((b, w), dtype=torch.bfloat16, device=d)}
++                        "last": torch.zeros((b, w), dtype=torch.bfloat16, device=d),
++                        "guide": torch.zeros((b, self.qsa_guide_width), dtype=torch.int32, device=d)}
+         return self._fb
+ 
+     def accepted_prepare(self, requests):
+@@ -358,6 +400,11 @@
+         self.head.write_kv(tokens[:b * steps], hidden, positions, write)
+         fb["rows"][:b, :steps].copy_(rows)
+         fb["last"][:b].copy_(rows[torch.arange(b, device=starts.device), (counts - 1).clamp(min=0)])
++        if self.qsa_guide:
++            entry = QSA_GUIDE.get((b * steps, steps))
++            if entry is not None:
++                guide_rows = torch.arange(b, device=starts.device) * steps + (counts - 1).clamp(min=0)
++                fb["guide"][:b].copy_(entry[0][guide_rows, :self.qsa_guide_width])
+ 
+     def accepted_publish(self, requests, emitted):
+         """The host half of `_accepted` after the device feedback pass landed: the pending input."""
+@@ -369,6 +416,9 @@
+             if not 1 <= count <= self.k + 1 or state.draft_pos != req.committed_len - count:
+                 raise ValueError("MTP feedback does not follow the pending input")
+             state.last_hidden = last[i]
++            if (self.qsa_guide and not getattr(req, "media", None)
++                    and req.context_len > self.qsa_guide_min_context):
++                state.qsa_guide_pages = fb["guide"][i].clone()
+             state.pending_token = None if req.finished else int(tokens[-1])
+             state.pending_hidden = None if req.finished else last[i:i + 1]
+             state.draft_pos = req.committed_len

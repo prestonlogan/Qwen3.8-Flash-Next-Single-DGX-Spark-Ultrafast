@@ -11,6 +11,14 @@ including the ones we threw away, so you don't have to repeat them.
 > loops section 6 describes: the default had 0 looping runs of 30 in the agent replay. `TUNING=v1.1-exact` keeps
 > exact acceptance. Results: [bench/ab-20261124](../bench/ab-20261124/README.md).
 
+
+> **v1.2.0 release candidate (2026-11-24).** Patch 0005 guides long-context MTP draft attention with the target
+> model's verify-time sparse attention page selection. It keeps 14,336 recent pages plus 2,048 selected distant
+> pages after 65,536 tokens. Controlled results: fixed exact 100K copy effective throughput 200.0 versus 168.0 tok/s,
+> batch-2 fixed live throughput 256.7 versus 196.0, and realistic 100K decode 101.0 versus 82.4. Exact output stayed
+> byte-identical. Needle and RULER long-context screens passed. A simpler fixed 16K draft window was rejected because
+> lower draft time did not make up for lower acceptance.
+
 Back to the [README](../README.md).
 
 ## Contents

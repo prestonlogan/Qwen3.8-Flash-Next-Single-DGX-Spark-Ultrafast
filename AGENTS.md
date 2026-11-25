@@ -3,7 +3,7 @@
 Serve Qwen3.8-Flash-Next (125B MoE, RadixArk NVFP4 checkpoint, 135 GB, plus Hibana's calibrated 3-bit copies, 51 GB)
 with image input on one DGX Spark with [Hibana](https://github.com/sharar-project/hibana) via Docker Compose. Based on
 [dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark](https://github.com/dedene/Hibana-Qwen3.8-Flash-Next-DGX-Spark) (6948e9b);
-this recipe adds patches 0002 and 0003 (image input), patch 0004 (v1.1.0 speed and repetition stack), and ships
+this recipe adds patches 0002 and 0003 (image input), patch 0004 (v1.1.0 speed and repetition stack), patch 0005 (target-guided long-context draft attention), and ships
 Hibana's `fast` profile with `TUNING=v1.1` as the default.
 
 ## Layout
@@ -27,7 +27,8 @@ Hibana's `fast` profile with `TUNING=v1.1` as the default.
   - 0004 (v1.1.0): repetition guard and late `</think>` ramp (`engine/think_guard.py`), distilled MTP draft head with
     3-bit experts (`HIBANA_MTP_WEIGHTS`, `HIBANA_MTP_W3_EXPERTS*`), GB10 kernels (HyperConnection mix, split-K sparse
     attention, 3-bit GEMM geometry), route renormalization, prefill warmup. The patch header lists which parts are
-    opt-in; `tools/serve.sh` turns them on when `TUNING=v1.1` (default) and `PROFILE=fast`.
+    opt-in; `tools/serve.sh` turns them on when `TUNING=v1.1` (default) and `PROFILE=fast`. It also sets `HIBANA_QSA_PREFILL_BACKEND=auto` there.
+- Patch 0005 guides long-context MTP draft attention with the target model's verify-time sparse attention page selection. `TUNING=v1.1*` enables it by default at attention layer 43, with 14,336 recent pages plus 2,048 selected distant pages after 65,536 tokens. It is draft-only, disabled for image requests and budget speculation, and exact acceptance remains byte-identical on the fixed prompt set.
 - `TUNING=v1.1` uses Hibana's top-3 acceptance rule at temperature 0 (`HIBANA_ACCEPT_DEFAULT=3:2.0`) and
   `accept_soft` 0.35 when sampling. `TUNING=v1.1-exact` is the same stack with exact acceptance (`exact`, 0.0).
 - `TUNING=stock` reproduces v1.0.0 behavior (Hibana `fast`, `accept_soft` 0.5, stock MTP head, DRAFT_VOCAB 131072).
@@ -45,10 +46,10 @@ tools/check.py                   # all ok, including "image input"
 ## Pins
 
 - Hibana `d474b74d5a892b2cd1cc8fc50cb17946e2a539bb` (tag v0.1.0, 2026-11-13). Its `uv.lock` pins the Python stack
-  (torch 2.13.0+cu130, flashinfer 0.6.17, triton 3.7.1, b12x 1.5.0). Patches 0002-0004 apply to this commit only, in order.
+  (torch 2.13.0+cu130, flashinfer 0.6.17, triton 3.7.1, b12x 1.5.0). Patches 0002-0005 apply to this commit only, in order.
 - Base image `nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d`,
   uv `ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0`.
-- Image tag `hibana-flashnext-vision:d474b74d-v2`: bump `-vN` with every Dockerfile or patch change.
+- Image tag `hibana-flashnext-vision:d474b74d-v4`: bump `-vN` with every Dockerfile or patch change.
 - Weights, pinned in Hibana's source (`hibana/model/flashnext/config.py`), not here:
   `RadixArk/Qwen3.8-Flash-Next-NVFP4@7b719225242aacd3dbd3f9407468c2ee9a9d2594` (includes the vision tower weights),
   `yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad@5c4c62a62853caebea8cedda7fbed952efa1effe`,
