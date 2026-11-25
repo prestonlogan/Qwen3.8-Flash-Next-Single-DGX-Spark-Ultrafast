@@ -9,6 +9,7 @@ Validated on one DGX Spark on 2026-11-25. This release adds target-guided long-c
 - `HIBANA_QSA_PREFILL_BACKEND=auto` is set in the v1.1 serve settings.
 - The HyperConnection tensor-core kernel no longer contains programmatic dependent launch instructions that the host never launched correctly. This fixes the intermittent batch 4 verify capture freeze.
 - Patch 0004 includes the v1.1.1 `think_bias` fix and the Dockerfile guard against `if batch.eager:`.
+- Patch 0006 fixes issue #10. Inside thinking, the engine masks the `</think>` token unless the previous token ends in a newline and the reasoning is not inside an open code fence, inline code span, or double-quoted span on the current line. The end-of-turn tokens are also masked inside thinking. The parser ends reasoning on the token id instead of the text, so quoting or explaining the tag no longer ends the turn. Forced closes (think guard, thinking budget) are unchanged.
 
 ## Measured results
 
@@ -75,13 +76,23 @@ The 100K comparison used four runs each. The 250K comparison used two runs each.
 
 Medians of 3 runs. The 32K prefill was 9.0 percent faster. The 2K result was flat. At 63K, prefill was 2.4 percent slower on the first request and 3.6 percent slower warm.
 
+### Issue #10 fix (image v7)
+
+The tables above were measured on image v6. Patch 0006 was then checked on image v7 in default mode. Raw files: [bench/v120-20261125/think-fix](bench/v120-20261125/think-fix/).
+
+- 20 prompts that quote or explain the tag, each at temperature 0 and sampled: 0 of 40 empty answers on v7, against 22 of 40 on v6. No answer continued the reasoning.
+- `tools/check.py --needle 70000` and the crash regression passed.
+- Exact-mode fixed prompts were byte-identical to v6 (both hashes above).
+- Decode, one run per cell at temperature 0: prose 143.0 and code 163.6 tok/s. Single runs are noisy; neither is slower than the v6 medians beyond normal run spread.
+- Three runs of the sampled agent gate, including UT-01, all passed with no loops, empty answers, or guard cuts.
+
 ## Upgrade
 
 ```bash
 git pull && docker compose up -d --build --wait
 ```
 
-The image is `hibana-flashnext-vision:d474b74d-v6`.
+The image is `hibana-flashnext-vision:d474b74d-v7`.
 
 ## Rollback
 
@@ -101,3 +112,4 @@ v1.1.1 still has the old HyperConnection PDL instructions. It can freeze during 
 - Prefill at 63K was 2 to 4 percent slower in this sample, while 32K was 9 percent faster.
 - The 4-request sampled cells had lower medians in both modes (209.1 against 231.4 default, 187.9 against 199.3 exact). The run ranges overlap, and a 3-run median cannot separate this from noise. Patch 0005 is not active at these prompt lengths.
 - The released v1.1.1 image itself cannot reliably complete batch 4 verify capture. The baseline used for these numbers is v1.1.1 behavior on the v1.2.0 image with the two v1.2.0 features disabled.
+- Issue #10 is fixed for thinking, but answers that must contain the literal `</think>` text can still drop or change it. In the check above, some `sed` and `grep` examples came out with an empty pattern, and a few answers named the tag wrongly. Do not rely on the model to reproduce that exact string.

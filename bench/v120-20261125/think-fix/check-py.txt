@@ -1,0 +1,13 @@
+ok    model listed         ids ['RadixArk/Qwen3.8-Flash-Next-NVFP4']
+ok    alias                model local-ai, answer 'ok'
+ok    thinking off         answer '42', reasoning 0 chars
+ok    thinking on          answer '15', reasoning 112 chars
+ok    tool call            create_event({"date": "2027-03-12", "title": "Sprint Review"})
+ok    tool round trip      answer "Done! I've created the event **Sprint Review** on **12 March 2027** (event ID: EV-4471)."
+ok    streaming            reasoning 0 chars, answer 'Brussels'
+ok    dutch                answer 'De hoofdstad van de provincie West-Vlaanderen is Brugge.'
+ok    image input          answer 'left: red, right: blue'
+skip  serving              {"profile": "fast", "spec": "8", "max_batch": 4, "max_context": 262144, "accept_soft": 0.35, "w3_decode": true, "vision": true, "draft_vocab": 98304}
+ok    speed                770 tokens in 3.9 s = 199.5 tok/s
+ok    image speed          206 tokens in 2.6 s = 80.5 tok/s
+ok    needle 70,000        86,275 tokens, depth 51%, 0 s: expected 80308421, got '80308421'

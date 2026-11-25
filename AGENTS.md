@@ -49,7 +49,7 @@ tools/check.py                   # all ok, including "image input"
   (torch 2.13.0+cu130, flashinfer 0.6.17, triton 3.7.1, b12x 1.5.0). Patches 0002-0005 apply to this commit only, in order.
 - Base image `nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d`,
   uv `ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0`.
-- Image tag `hibana-flashnext-vision:d474b74d-v6`: bump `-vN` with every Dockerfile or patch change.
+- Image tag `hibana-flashnext-vision:d474b74d-v7`: bump `-vN` with every Dockerfile or patch change.
 - Weights, pinned in Hibana's source (`hibana/model/flashnext/config.py`), not here:
   `RadixArk/Qwen3.8-Flash-Next-NVFP4@7b719225242aacd3dbd3f9407468c2ee9a9d2594` (includes the vision tower weights),
   `yemara/Qwen3.8-Flash-Next-NVFP4-sharar-w3-qad@5c4c62a62853caebea8cedda7fbed952efa1effe`,

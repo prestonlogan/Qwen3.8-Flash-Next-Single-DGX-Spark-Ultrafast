@@ -1,0 +1,94 @@
+{
+  "first_no_temperature": {
+    "wall_s": 0.45510029792785645,
+    "content": "\n\n15",
+    "reasoning_len": 132,
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 87,
+      "completion_tokens": 49,
+      "total_tokens": 136,
+      "prompt_tokens_details": {
+        "cached_tokens": 64
+      },
+      "reasoning_tokens": 44
+    }
+  },
+  "second_temperature_0_3": {
+    "wall_s": 0.6607973575592041,
+    "content": "\n\n15",
+    "reasoning_len": 208,
+    "finish_reason": "stop",
+    "usage": {
+      "prompt_tokens": 87,
+      "completion_tokens": 76,
+      "total_tokens": 163,
+      "prompt_tokens_details": {
+        "cached_tokens": 64
+      },
+      "reasoning_tokens": 71
+    }
+  },
+  "four_concurrent": [
+    {
+      "wall_s": 0.8314723968505859,
+      "content": "\n\n15",
+      "reasoning_len": 142,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 91,
+        "completion_tokens": 50,
+        "total_tokens": 141,
+        "prompt_tokens_details": {
+          "cached_tokens": 64
+        },
+        "reasoning_tokens": 45
+      }
+    },
+    {
+      "wall_s": 0.9416806697845459,
+      "content": "\n\n15",
+      "reasoning_len": 189,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 91,
+        "completion_tokens": 63,
+        "total_tokens": 154,
+        "prompt_tokens_details": {
+          "cached_tokens": 64
+        },
+        "reasoning_tokens": 58
+      }
+    },
+    {
+      "wall_s": 0.9845948219299316,
+      "content": "\n\n15",
+      "reasoning_len": 189,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 91,
+        "completion_tokens": 63,
+        "total_tokens": 154,
+        "prompt_tokens_details": {
+          "cached_tokens": 64
+        },
+        "reasoning_tokens": 58
+      }
+    },
+    {
+      "wall_s": 1.021501064300537,
+      "content": "\n\n15",
+      "reasoning_len": 198,
+      "finish_reason": "stop",
+      "usage": {
+        "prompt_tokens": 91,
+        "completion_tokens": 62,
+        "total_tokens": 153,
+        "prompt_tokens_details": {
+          "cached_tokens": 64
+        },
+        "reasoning_tokens": 57
+      }
+    }
+  ]
+}
