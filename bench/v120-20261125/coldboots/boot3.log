@@ -1,0 +1,87 @@
+serve: profile fast, tuning v1.1, proposer mtp, spec profile, batch profile, context 262144, SSD tier on, host floor 12 GiB, vision 1, draft vocab 98304
+Hibana flashnext (one Spark) on http://127.0.0.1:5806, profile fast
+  GPU: NVIDIA GB10 (SM 12.1), driver 580.178.04; memory: 123 GiB total, 115 GiB available
+  speculation: mtp, 8 drafts, draft the model's own MTP head
+  acceptance: greedy 3:2.0, sampled s=0.35
+  3-bit copies: on (/data/w3-checkpoints/flashnext-5c4c62a62853); device-resident acceptance: on
+  context 262144 tokens, up to 4 requests, verify depth by batch 2:7,4:6
+  traces: off; SSD tier: /data/ssd/flashnext, 100 GiB
+loading flashnext: RadixArk/Qwen3.8-Flash-Next-NVFP4@7b719225
+  loaded 8/48 layers (6s, 9.8 GiB)
+  loaded 16/48 layers (11s, 18.0 GiB)
+  loaded 24/48 layers (16s, 26.3 GiB)
+  loaded 32/48 layers (20s, 34.6 GiB)
+  loaded 40/48 layers (25s, 42.8 GiB)
+  loaded 48/48 layers (30s, 51.1 GiB)
+  experts: 3-bit from /data/w3-checkpoints/flashnext-5c4c62a62853 (46.1 GiB)
+  vision: Qwen image tower and projector (0.84 GiB)
+  w3: 229 calibrated trunk matrices from /data/w3-checkpoints/flashnext-5c4c62a62853; 2 tensor-parallel parts stay FP8 (input width not a multiple of 128)
+  weights loaded in 33s, 53.8 GiB allocated (fp8 trunk, 5.38 GB per decode token)
+  counted after the pools: workspaces 0.50, graphs 0.50, first use 2.25, activations 1.00 GiB; floor 12 GiB
+  pools: 1496065 KV pages (25.68 GiB), 122 state slots (5.56 GiB, int8:w16:r8 recurrent state)
+  mtp: overlaid 26 distilled body tensors from /data/w3-checkpoints/mtp-t35-overlap-body.pt
+  mtp: loading custom W3 routed experts from /data/w3-checkpoints/mtp-t35-overlap-w3exp.pt
+  proposer: mtp, persistent 3.97 GiB, verify buffers 0.10 GiB, k=8
+  captured decode graph for batch 1
+  captured selecting decode graph for batch 1
+  captured decode graph for batch 2
+  captured selecting decode graph for batch 2
+  captured decode graph for batch 4
+  captured selecting decode graph for batch 4
+qsa guide stash layer 43 rows 2 steps 2
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 4 steps 2
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 8 steps 2
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 3 steps 3
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 6 steps 3
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 12 steps 3
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 4 steps 4
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 8 steps 4
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 16 steps 4
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 5 steps 5
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 10 steps 5
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 20 steps 5
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 6 steps 6
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 12 steps 6
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 24 steps 6
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 7 steps 7
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 14 steps 7
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 28 steps 7
+  captured dense and selecting verify graph for batch 4
+qsa guide stash layer 43 rows 8 steps 8
+  captured dense and selecting verify graph for batch 1
+qsa guide stash layer 43 rows 16 steps 8
+  captured dense and selecting verify graph for batch 2
+qsa guide stash layer 43 rows 9 steps 9
+  captured dense and selecting verify graph for batch 1
+  captured draft graph for batch 1
+  captured draft graph for batch 2
+  captured draft graph for batch 4
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 3 (+3 sampled)
+  captured device accept graphs: 2 (+2 sampled)
+  captured device accept graphs: 1 (+1 sampled)
+  warmup done
+  ssd store: /data/ssd/flashnext/v2/e0
+  ssd tier: 178 stored prefixes, 97.3 of 100 GiB, 256-token blocks
+serving on http://127.0.0.1:5806

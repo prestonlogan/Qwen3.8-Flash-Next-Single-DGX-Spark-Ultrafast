@@ -265,6 +265,9 @@ Put overrides in `.env` (see `.env.example`).
 ### Long context
 
 v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench/longctx-20261124](bench/longctx-20261124/README.md).
+The v1.2.0 rows come from the 2026-11-25 release validation ([bench/v120-20261125](bench/v120-20261125/README.md)),
+which measured only 100K and 250K. They ran on a different day from the v1.1.0 rows; the same-day A/B is in the
+first bullet below.
 
 | Context already filled | 0 | 32K | 64K | 100K | 150K | 200K | 250K |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -278,8 +281,8 @@ v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench
   byte-identical fixed prompts. Batch 2 rose from 202.1 to 229.3 and 244.3 tok/s after a first-request warmup cost.
   At 131K, the five-task RULER subset averaged 90.5 against 90.1, and variable tracking over 10 samples averaged 86.0
   against 84.0.
-- **Decode holds up; prefill is the cost.** Decode is still near 70 tok/s with 250K tokens in context, but an uncached
-  250K prompt waits about 87 s for its first token. Prompts already in the prefix cache skip that.
+- **Decode holds up; prefill is the cost.** Decode was near 70 tok/s with 250K tokens in context in v1.1.0 and about
+  100 tok/s in v1.2.0, but an uncached 250K prompt still waits 80 to 87 s for its first token. Prompts already in the prefix cache skip that.
 - **RULER** (NVIDIA's 13 synthetic tasks, thinking off, temperature 0): average **96.3** at 32K, **94.0** at 64K and
   **96.4** at 128K. The 8 retrieval tasks scored 100 at every length; the misses are in variable tracking, common-word
   counting and HotpotQA. Samples are small (5 per task at 32K, 3 at 64K and 128K), and 192K was not run. Common-word

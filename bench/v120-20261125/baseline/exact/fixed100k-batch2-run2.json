@@ -1,0 +1,70 @@
+{
+  "mode": "batch2",
+  "nonce": "1795618294-batch2",
+  "rows": 3200,
+  "before": {
+    "rounds": 141,
+    "proposed": 1340,
+    "accepted": 1085,
+    "emitted": 1246,
+    "round_ms": 50.32985846442666,
+    "accept_rate": 0.8097014925373134,
+    "tokens_per_round": 8.836879432624114,
+    "relaxed_accepts": 0,
+    "verify_depth": 8
+  },
+  "after": {
+    "rounds": 195,
+    "proposed": 1993,
+    "accepted": 1641,
+    "emitted": 1884,
+    "round_ms": 52.64339794297344,
+    "accept_rate": 0.8233818364274962,
+    "tokens_per_round": 9.661538461538461,
+    "relaxed_accepts": 0,
+    "verify_depth": 8
+  },
+  "responses": [
+    {
+      "wall_s": 67.99309277534485,
+      "usage": {
+        "prompt_tokens": 99968,
+        "completion_tokens": 320,
+        "total_tokens": 100288,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "reasoning_tokens": 0
+      },
+      "finish_reason": "length",
+      "content_len": 1098,
+      "content_sha256": "cda6636877721979beca59039b83b9869437bf5407df2d2ecc779d4f9a3b8211",
+      "content_prefix": "field note 3200: operator C0 logged voltage 471 humidity 89 rotation 86 and ordinary maintenance telemetry.\nfield note 3201: operator D17 logged voltage 508 hum"
+    },
+    {
+      "wall_s": 67.60975074768066,
+      "usage": {
+        "prompt_tokens": 99968,
+        "completion_tokens": 320,
+        "total_tokens": 100288,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "reasoning_tokens": 0
+      },
+      "finish_reason": "length",
+      "content_len": 1098,
+      "content_sha256": "ce4a09056801facb1910cf4a8b21b16c3876b8be8dc3833965bb13071a2aa666",
+      "content_prefix": "field note 3200: operator C0 logged voltage 471 humidity 89 rotation 86 and ordinary maintenance telemetry.\nfield note 3201: operator D17 logged voltage 508 hum"
+    }
+  ],
+  "batch_wall_s": 67.99309277534485,
+  "rounds": 54,
+  "emitted": 638,
+  "proposed": 653,
+  "accepted": 556,
+  "accepted_per_proposed": 0.8514548238897397,
+  "emitted_per_round": 11.814814814814815,
+  "round_ms": 58.68430658140116,
+  "round_effective_tps": 201.32835340614363
+}

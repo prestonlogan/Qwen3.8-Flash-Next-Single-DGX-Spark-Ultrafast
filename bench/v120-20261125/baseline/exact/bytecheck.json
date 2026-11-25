@@ -1,0 +1,20 @@
+[
+  {
+    "id": "short-code",
+    "content": "```python\ndef fibonacci(n):\n    if n < 0:\n        raise ValueError(\"Input must be a non-negative integer\")\n    if n == 0:\n        return 0\n    if n == 1:\n        return 1\n    a, b = 0, 1\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n    return b\n```",
+    "reasoning": "",
+    "finish_reason": "stop",
+    "completion_tokens": 97,
+    "prompt_tokens": 27,
+    "sha256": "9b423bbd358845b6c12a4bf8e836bec5041641d55004374c3d3947a912d31a55"
+  },
+  {
+    "id": "long-archive",
+    "content": "ZEBRA-417",
+    "reasoning": "",
+    "finish_reason": "stop",
+    "completion_tokens": 8,
+    "prompt_tokens": 133132,
+    "sha256": "1981371a29c2ed1cb2706189ae471d91dec1e17ac73e420cc1d0e1ebf81dfbb0"
+  }
+]

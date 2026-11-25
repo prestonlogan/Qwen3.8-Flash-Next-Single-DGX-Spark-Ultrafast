@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "ttft_ms": 9780.8997631073,
+      "total_ms": 9820.466041564941,
+      "usage": {
+        "prompt_tokens": 30823,
+        "completion_tokens": 8,
+        "total_tokens": 30831,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "prefill_tps": 3151.3460669806336,
+      "name": "long32k",
+      "requested_words": 19000,
+      "nonce": "1795622198-long32k"
+    }
+  ]
+}
