@@ -1,0 +1,15 @@
+[v7c] ( 1/3) lf-01-story-bare         PASS ptok=15940 ttft=  5244ms tok= 1770 tps= 80.4 tsteps=0 r_ng7= 1 c_ng7= 2 
+[v7c] ( 2/3) ag-01-floating-island    PASS ptok=15992 ttft=  4690ms tok=  981 tps=131.7 tsteps=3 r_ng7= 1 c_ng7= 1 
+[v7c] ( 3/3) lf-02-story-lighthouse   PASS ptok=15957 ttft=  1530ms tok= 8076 tps= 79.8 tsteps=0 r_ng7= 2 c_ng7= 2 
+Traceback (most recent call last):
+  File "/home/plogan/exp-hibana-goal20261121/judge/run_dsh_sampled_gate_30.py", line 553, in <module>
+    main()
+  File "/home/plogan/exp-hibana-goal20261121/judge/run_dsh_sampled_gate_30.py", line 540, in main
+    args.out.write_text(json.dumps(summary, indent=2) + "\n")
+  File "/usr/lib/python3.12/pathlib.py", line 1049, in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IsADirectoryError: [Errno 21] Is a directory: '/home/plogan/exp-hibana-goal20261125/v121-think-fix/after-v7c/gate'
