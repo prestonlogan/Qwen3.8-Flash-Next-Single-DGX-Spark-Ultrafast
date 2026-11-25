@@ -995,11 +995,11 @@ new file mode 100644
 index 0000000..6f106a5
 --- /dev/null
 +++ b/hibana/kernels/csrc/hyper_mix_tc.cu
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,268 @@
 +// SM120/SM121 Tensor-Core Fused HyperConnection.mix v3:
 +//   - 2x N-tiling per warp (m16 x n16 per warp = 2 m16n8k16 MMAs sharing the same A fragment -> 50% fewer A loads!)
 +//   - 2-stage software-pipelined coalesced 16-byte uint4 __ldcs loads (overlaps DRAM latency with Tensor-Core MMA!)
-+//   - Programmatic dependent launch (griddepcontrol) + exact BF16 activations (zero activation FP8 quantization error).
++//   - Exact BF16 activations (zero activation FP8 quantization error); stream-ordered down and up kernels.
 +
 +#include <cuda_bf16.h>
 +#include <cuda_fp8.h>
@@ -1074,10 +1074,9 @@ index 0000000..6f106a5
 +  float acc0[4] = {0.f, 0.f, 0.f, 0.f};
 +  float acc1[4] = {0.f, 0.f, 0.f, 0.f};
 +
-+  // Prefetch first weight chunk before waiting on producer (PDL)
++  // Prefetch first weight chunk before the main loop
 +  uint4 wv0_cur = __ldcs(reinterpret_cast<const uint4*>(w_row0 + k_begin + t * 16));
 +  uint4 wv1_cur = __ldcs(reinterpret_cast<const uint4*>(w_row1 + k_begin + t * 16));
-+  asm volatile("griddepcontrol.wait;" ::: "memory");
 +
 +  for (int k = k_begin; k < k_end; k += 256) {
 +    uint4 wv0_nxt, wv1_nxt;
@@ -1121,7 +1120,6 @@ index 0000000..6f106a5
 +    const float sum = smem[0][r][c] + smem[1][r][c] + smem[2][r][c] + smem[3][r][c];
 +    partials[(static_cast<size_t>(sk) * M + r) * N_down + n0 + c] = sum;
 +  }
-+  asm volatile("griddepcontrol.launch_dependents;");
 +}
 +
 +// Kernel 2: 2x N-tiling per block (16 columns c0..c0+15), 4 warps = 4 streams s=0..3, double-buffered uint4 __ldcs!
@@ -1146,10 +1144,9 @@ index 0000000..6f106a5
 +  const uint8_t* w_row0 = w_up + static_cast<size_t>(s * H + c0 + g) * K_RANK;
 +  const uint8_t* w_row1 = w_up + static_cast<size_t>(s * H + c0 + 8 + g) * K_RANK;
 +
-+  // Prefetch first weight chunk while waiting for Kernel 1 partials!
++  // Prefetch first weight chunk before consuming Kernel 1 partials!
 +  uint4 wv0_cur = __ldcs(reinterpret_cast<const uint4*>(w_row0 + t * 16));
 +  uint4 wv1_cur = __ldcs(reinterpret_cast<const uint4*>(w_row1 + t * 16));
-+  asm volatile("griddepcontrol.wait;" ::: "memory");
 +
 +  const int tid = threadIdx.x;
 +  const float sd_sc = *s_down;
@@ -1265,7 +1262,7 @@ index 0000000..6f106a5
 +}
 +
 +PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-+  m.def("hyper_mix_tc", &hyper_mix_tc, "SM121 Tensor-Core v3 (2x N-tile + double-buffered uint4 + PDL + m16n8k16)");
++  m.def("hyper_mix_tc", &hyper_mix_tc, "SM121 Tensor-Core v3 (2x N-tile + double-buffered uint4 + stream ordered + m16n8k16)");
 +}
 diff --git a/hibana/kernels/csrc/w3_gemm.cu b/hibana/kernels/csrc/w3_gemm.cu
 index e026d1a..40e1c0d 100644

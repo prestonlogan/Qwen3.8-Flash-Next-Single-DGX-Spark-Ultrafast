@@ -1,0 +1,51 @@
+{
+  "mode": "single",
+  "nonce": "1795618181-single",
+  "rows": 3200,
+  "before": {
+    "rounds": 15,
+    "proposed": 118,
+    "accepted": 93,
+    "emitted": 103,
+    "round_ms": 36.67061934247613,
+    "accept_rate": 0.788135593220339,
+    "tokens_per_round": 6.866666666666666,
+    "relaxed_accepts": 0,
+    "verify_depth": 8
+  },
+  "after": {
+    "rounds": 87,
+    "proposed": 693,
+    "accepted": 529,
+    "emitted": 608,
+    "round_ms": 45.287412741146554,
+    "accept_rate": 0.7633477633477633,
+    "tokens_per_round": 6.988505747126437,
+    "relaxed_accepts": 0,
+    "verify_depth": 8
+  },
+  "response": {
+    "wall_s": 35.36243772506714,
+    "usage": {
+      "prompt_tokens": 99964,
+      "completion_tokens": 506,
+      "total_tokens": 100470,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "reasoning_tokens": 0
+    },
+    "finish_reason": "stop",
+    "content_len": 1737,
+    "content_sha256": "ceb90e1766df73d701acc90f09e1f2fbdf144f916196fd1bf9b17d19615d9c1d",
+    "content_prefix": "field note 3200: operator C0 logged voltage 471 humidity 89 rotation 86 and ordinary maintenance telemetry.\nfield note 3201: operator D17 logged voltage 508 hum"
+  },
+  "rounds": 72,
+  "emitted": 505,
+  "proposed": 575,
+  "accepted": 436,
+  "accepted_per_proposed": 0.7582608695652174,
+  "emitted_per_round": 7.013888888888889,
+  "round_ms": 47.082578032536226,
+  "round_effective_tps": 148.96994136646404
+}

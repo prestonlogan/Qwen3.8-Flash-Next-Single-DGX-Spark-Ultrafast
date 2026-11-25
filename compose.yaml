@@ -4,7 +4,7 @@
 name: hibana-flashnext-vision
 
 x-image: &image
-  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v2}
+  image: ${HIBANA_IMAGE:-hibana-flashnext-vision:d474b74d-v6}
   build:
     context: .
     args:
@@ -73,6 +73,14 @@ services:
       # faster decode on English and code. The model still verifies against the full vocabulary. Set 0 (full
       # vocabulary) for mostly non-English text.
       HIBANA_DRAFT_VOCAB: ${DRAFT_VOCAB:-}
+      # Long-context MTP draft attention guided by the target model's verify-time sparse attention page selection.
+      HIBANA_MTP_QSA_GUIDE: ${MTP_QSA_GUIDE:-}
+      HIBANA_QSA_GUIDE_LAYER: ${QSA_GUIDE_LAYER:-}
+      HIBANA_MTP_QSA_GUIDE_LOCAL: ${MTP_QSA_GUIDE_LOCAL:-}
+      HIBANA_MTP_QSA_GUIDE_WIDTH: ${MTP_QSA_GUIDE_WIDTH:-}
+      HIBANA_MTP_QSA_GUIDE_MIN_CONTEXT: ${MTP_QSA_GUIDE_MIN_CONTEXT:-}
+      # Sparse attention prefill backend. Empty uses auto in TUNING=v1.1: optimized prefill where supported.
+      HIBANA_QSA_PREFILL_BACKEND: ${QSA_PREFILL_BACKEND:-}
     volumes:
       - ./tools/serve.sh:/serve.sh:ro
       - ./tools/health.sh:/health.sh:ro

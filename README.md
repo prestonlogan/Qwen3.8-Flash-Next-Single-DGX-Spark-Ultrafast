@@ -15,6 +15,8 @@ Most Qwen3.8-Flash-Next recipes reach ~45–50 tok/s on a Spark (vLLM/SGLang/Ten
 and adds **image input** for Flash-Next, which upstream Hibana does not load. OpenAI- and Anthropic-compatible API on
 port 8888, thinking and tool calls included.
 
+> **v1.2.0:** target-guided long-context draft attention and automatic QSA prefill. On one Spark, same day and harness, realistic decode at 100K rose from 89.9 to 101.0 tok/s (four runs each) and at 250K from 74.4 to 100.4 tok/s. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with byte-identical output. Short context is unchanged within the measured run spread. It also removes invalid programmatic dependent launch instructions from the HyperConnection kernels, fixing an intermittent batch 4 startup freeze. Upgrade with `git pull && docker compose up -d --build --wait`.
+>
 > **v1.1.0:** a distilled draft head, a repetition guard and GB10 kernels, in two modes. The default
 > (`TUNING=v1.1`) is 28% faster on prose and 23% faster on code than v1.0.0 at temperature 0, and 12% faster across 30
 > sampled agent sessions with no looping run (v1.0.0: 2 of 30). `TUNING=v1.1-exact` keeps drafting from changing what
@@ -161,6 +163,7 @@ Anthropic-style `image` blocks with a base64 source work too.
 | Image requests use MTP drafting and CUDA graphs | — | yes |
 | Draft vocabulary shortlist | off | on (98,304 rows) |
 | Distilled MTP draft head, 3-bit experts | no | **yes** (`patches/0004`, 1.2 GB download) |
+| Target-guided long-context draft attention | no | **yes** (`patches/0005`) |
 | Repetition guard and late `</think>` ramp | no | **yes** (`patches/0004`) |
 | GB10 kernels: HyperConnection mix, split-K sparse attention, 3-bit GEMM | no | **yes** (`patches/0004`) |
 | Tool-argument fix (`patches/0001`) | yes | yes (dedene's) |
@@ -179,7 +182,14 @@ Anthropic-style `image` blocks with a base64 source work too.
   renormalization; and a 2K/4K-token prefill warmup at startup. The patch header lists which parts are always on
   (kernels, warmup) and which `TUNING=v1.1` and `v1.1-exact` switch on.
 
-All four patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
+- `patches/0005-qsa-guided-draft-attention.patch` (v1.2.0): for text contexts over 65,536 tokens,
+  the draft keeps the most recent 14,336 KV pages plus 2,048 distant pages selected by the target model's own
+  verify-time sparse attention at layer 43. This shortens long-context draft attention without changing the target
+  model or exact verification. Image requests and budget speculation are excluded. In the controlled release test,
+  realistic 100K decode rose from 89.9 to 101.0 tok/s and 250K from 74.4 to 100.4; fixed exact 100K copy rose from
+  149.0 to 179.3 tok/s with byte-identical fixed prompts.
+
+All five patches apply to Hibana `d474b74` (v0.1.0), in order, during the image build.
 
 ## Settings
 
@@ -192,6 +202,12 @@ Put overrides in `.env` (see `.env.example`).
 | `VISION` | `1` | `1` loads the vision tower (0.84 GiB) and accepts images; `0` serves text only |
 | `DRAFT_VOCAB` | 98,304 (`v1.1*`), 131,072 (`stock`) | The drafter picks from the most common tokens (+3–10% on English and code in our tests); verification still uses the full vocabulary. Set `0` for mostly non-English text |
 | `DRAFT_HEAD_REPO` | `prestonlogan/Qwen3.8-Flash-Next-MTP-Draft-Head` | Hugging Face repo the download service fetches the distilled draft head from (SHA-256 checked) |
+| `MTP_QSA_GUIDE` | `1` (`v1.1*`) | Target-guided long-context draft attention. Set `0` to disable it |
+| `QSA_GUIDE_LAYER` | `43` | Target attention layer whose verify-time page selection guides the draft |
+| `MTP_QSA_GUIDE_LOCAL` | `14336` | Recent draft KV pages always kept |
+| `MTP_QSA_GUIDE_WIDTH` | `2048` | Selected distant draft KV pages kept, at most 2048 |
+| `MTP_QSA_GUIDE_MIN_CONTEXT` | `65536` | Context length where guided drafting starts |
+| `QSA_PREFILL_BACKEND` | `auto` (`v1.1*`) | Sparse attention prefill backend: optimized where supported, original otherwise. `optimized` is unsafe above 32K |
 | `PROPOSER` | `mtp` | `mtp` (the checkpoint's MTP head) or `dflash2` (incoai's DFlash2 drafter, 1.2 GB more; not tested with images) |
 | `SPEC` | profile's | Draft tokens per round; `0` turns speculation off |
 | `PARALLEL` | profile's (4) | Most requests decoded together |
@@ -202,7 +218,7 @@ Put overrides in `.env` (see `.env.example`).
 | `RESTART` | `no` | Docker restart policy. Set `unless-stopped` for a server that runs unattended: it restarts after a reboot and after an engine failure (see below) |
 | `HF_CACHE` | `~/.cache/huggingface` | Shared Hugging Face cache for the checkpoint |
 | `DATA_DIR` | `~/.cache/hibana-flashnext` | 3-bit copies, SSD tier, logs |
-| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v2` | Engine image tag |
+| `HIBANA_IMAGE` | `hibana-flashnext-vision:d474b74d-v6` | Engine image tag |
 
 ## Quality and limits
 
@@ -227,6 +243,9 @@ Put overrides in `.env` (see `.env.example`).
 - **v1.1.0 prefills more slowly.** At 2,048 tokens it prefilled at 3,434 (default) and 2,907 (exact) tok/s against
   3,786 for v1.0.0. Time to first token on a 17.9K-token uncached prompt was 7.9 s against 6.4 s (about 10-35% longer
   across our runs); prompts already in the prefix cache are unaffected (0.18 s).
+- **v1.2.0 prefill:** median 2,048-token prefill was 3,004 tok/s against 2,985 for the v1.1.1-equivalent baseline,
+  effectively flat. A unique 32K prompt prefilled at 3,435 against 3,151 tok/s, 9.0 percent faster. At 63K it was
+  3,147 against 3,225 tok/s, 2.4 percent slower.
 - **The repetition guard ends a generation that is looping** (finish reason `stop`) instead of letting it run to
   `max_tokens`. Set `HIBANA_THINK_GUARD=0` to turn it off.
 - **Don't raise `HIBANA_ACCEPT_SOFT` above the default.** At 1.0–3.0 decoding is 20–60% faster, but in our tests long
@@ -246,14 +265,24 @@ Put overrides in `.env` (see `.env.example`).
 ### Long context
 
 v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench/longctx-20261124](bench/longctx-20261124/README.md).
+The v1.2.0 rows come from the 2026-11-25 release validation ([bench/v120-20261125](bench/v120-20261125/README.md)),
+which measured only 100K and 250K. They ran on a different day from the v1.1.0 rows; the same-day A/B is in the
+first bullet below.
 
 | Context already filled | 0 | 32K | 64K | 100K | 150K | 200K | 250K |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Decode tok/s | 124.2 | 104.2 | 101.4 | 94.1 | 86.0 | 72.1 | 69.4 |
 | Time to first token, uncached | 1.0 s | 11.1 s | 22.5 s | 35.2 s | 53.5 s | 74.7 s | 86.6 s |
+| v1.2.0 decode tok/s | n/a | n/a | n/a | 101.0 | n/a | n/a | 100.4 |
+| v1.2.0 time to first token, uncached | n/a | n/a | n/a | 30.6 s | n/a | n/a | 80.0 s |
 
-- **Decode holds up; prefill is the cost.** Decode is still near 70 tok/s with 250K tokens in context, but an uncached
-  250K prompt waits about 87 s for its first token. Prompts already in the prefix cache skip that.
+- **v1.2.0:** patch 0005 improves decode after 65K tokens. In the same-day controlled A/B, realistic 100K decode rose
+  from 89.9 to 101.0 tok/s and 250K from 74.4 to 100.4. Fixed exact 100K copy rose from 149.0 to 179.3 tok/s with
+  byte-identical fixed prompts. Batch 2 rose from 202.1 to 229.3 and 244.3 tok/s after a first-request warmup cost.
+  At 131K, the five-task RULER subset averaged 90.5 against 90.1, and variable tracking over 10 samples averaged 86.0
+  against 84.0.
+- **Decode holds up; prefill is the cost.** Decode was near 70 tok/s with 250K tokens in context in v1.1.0 and about
+  100 tok/s in v1.2.0, but an uncached 250K prompt still waits 80 to 87 s for its first token. Prompts already in the prefix cache skip that.
 - **RULER** (NVIDIA's 13 synthetic tasks, thinking off, temperature 0): average **96.3** at 32K, **94.0** at 64K and
   **96.4** at 128K. The 8 retrieval tasks scored 100 at every length; the misses are in variable tracking, common-word
   counting and HotpotQA. Samples are small (5 per task at 32K, 3 at 64K and 128K), and 192K was not run. Common-word
@@ -267,7 +296,7 @@ v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench
 ## How it is put together
 
 - `Dockerfile`: Hibana v0.1.0 at commit `d474b74` with its own `uv.lock` environment (torch 2.13 cu130, FlashInfer
-  0.6.17, Triton 3.7.1) on `nvidia/cuda:13.0.0-devel`, then patches 0001–0004.
+  0.6.17, Triton 3.7.1) on `nvidia/cuda:13.0.0-devel`, then patches 0001–0005.
 - `compose.yaml`: a one-shot `download` service, then the `hibana` server with host networking.
 - `tools/download.sh`: Hibana's own preflight fetches the pinned checkpoint and 3-bit copies for every profile, then
   the distilled draft head (with `TUNING=v1.1`), checked against pinned SHA-256 hashes.
@@ -284,7 +313,7 @@ v1.1.0 default on one Spark, 2026-11-24. Scripts, raw results and method: [bench
   benchmark numbers quoted above.
 - **[Hibana](https://github.com/sharar-project/hibana)** by Yahya Emara, Chi-Chih Chang and the Abdelfattah Lab at
   Cornell (Apache-2.0, [paper](https://arxiv.org/abs/2611.10469)): the engine, the 3-bit copies, the `fast` profile and
-  MTP drafting. Patches 0002–0004 modify Hibana files; see [NOTICE](NOTICE).
+  MTP drafting. Patches 0002–0005 modify Hibana files; see [NOTICE](NOTICE).
 - Qwen3.8-Flash-Next by the Qwen team; NVFP4 checkpoint by RadixArk (license on its card). The distilled draft head
   is derived from Qwen3.8-Flash-Next and carries the Qwen Community License 1.0 ([card](hf/draft-head/README.md)).
 

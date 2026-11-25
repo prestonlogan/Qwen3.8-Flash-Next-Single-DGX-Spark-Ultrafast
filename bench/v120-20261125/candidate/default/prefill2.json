@@ -1,0 +1,52 @@
+{
+  "results": [
+    {
+      "ttft_ms": 625.8225440979004,
+      "total_ms": 659.6548557281494,
+      "usage": {
+        "prompt_tokens": 1987,
+        "completion_tokens": 8,
+        "total_tokens": 1995,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "prefill_tps": 3175.021447755906,
+      "name": "pp2048",
+      "requested_words": 1200,
+      "nonce": "1795620844-pp2048"
+    },
+    {
+      "ttft_ms": 19990.936517715454,
+      "total_ms": 20033.687114715576,
+      "usage": {
+        "prompt_tokens": 63216,
+        "completion_tokens": 8,
+        "total_tokens": 63224,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "prefill_tps": 3162.2330421578604,
+      "name": "long_cold",
+      "requested_words": 39000,
+      "nonce": "1795620844-long_cold"
+    },
+    {
+      "ttft_ms": 20205.57165145874,
+      "total_ms": 20248.41332435608,
+      "usage": {
+        "prompt_tokens": 63216,
+        "completion_tokens": 8,
+        "total_tokens": 63224,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "prefill_tps": 3128.641994914117,
+      "name": "long_warm",
+      "requested_words": 39000,
+      "nonce": "1795620844-long_warm"
+    }
+  ]
+}
